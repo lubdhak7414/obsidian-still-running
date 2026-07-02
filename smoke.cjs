@@ -22,15 +22,36 @@ class TFile { constructor(path){ this.path=path; } }
 function createFragment(cb){
   const frag = { children: [] };
   frag.appendText = (t) => { frag.children.push({ type:"text", text:t }); };
-  frag.createEl = (tag, o) => {
-    const el = { tag, text:(o&&o.text)||"", href:o&&o.href };
-    frag.children.push({ type:"el", tag, text:el.text, href:el.href });
+  frag.createEl = (tag, o, callback) => {
+    const el = {
+      tag, text:(o&&o.text)||"", href:o&&o.href, cls:o&&o.cls,
+      _listeners:{},
+      addEventListener(ev,fn){ (this._listeners[ev]=this._listeners[ev]||[]).push(fn); },
+      click(){ (this._listeners["click"]||[]).forEach(fn=>fn()); },
+    };
+    frag.children.push({ type:"el", tag, text:el.text, href:el.href, el });
+    if (callback) callback(el);
     return el;
   };
   if (cb) cb(frag);
   return frag;
 }
-const obsidianStub = { Plugin, PluginSettingTab, Setting, Notice, App: class {}, moment, TFile };
+// Real Obsidian sets these to the actual host OS; mirror that off process.platform so the
+// OS-specific external-toggle command test exercises whichever branch this machine would.
+const Platform = {
+  isWin: process.platform === "win32",
+  isMacOS: process.platform === "darwin",
+  isLinux: process.platform === "linux",
+};
+function setIcon(el, iconId){ el.icon = iconId; }
+let lastClipboardText = null;
+// Node has its own built-in read-only `navigator` global (Web Platform API surface) —
+// plain assignment silently no-ops, so this needs defineProperty to actually override it.
+Object.defineProperty(global, "navigator", {
+  value: { clipboard: { writeText(t){ lastClipboardText = t; return Promise.resolve(); } } },
+  configurable: true, writable: true,
+});
+const obsidianStub = { Plugin, PluginSettingTab, Setting, Notice, App: class {}, moment, TFile, Platform, setIcon };
 
 // ── @electron/remote stub ──
 const log = { listeners:{}, hidden:0, shown:0, focused:0, trayCreated:0, trayDestroyed:0, prevented:0, quit:0 };
@@ -324,6 +345,29 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   const helpBrCount = helpFrag ? helpFrag.children.filter(c=>c.type==="el"&&c.tag==="br").length : 0;
   ok(helpBrCount>=1, "settings: description uses real <br> line breaks, not a literal \\n (which doesn't render in HTML)");
   pSettings.onunload();
+
+  // ── Settings page (external toggle enabled): OS-specific, individually copyable commands ──
+  const pSettingsOn = new PluginClass(app, { id:"obsidian-still-running" });
+  pSettingsOn._data = { enableExternalToggle: true };
+  await pSettingsOn.onload();
+  lastSettings.length = 0;
+  pSettingsOn._tabs[0].display();
+  const extToggleOn = lastSettings.find(s => s.name === "Enable external toggle (advanced)");
+  const onFrag = extToggleOn && extToggleOn.desc;
+  const codeEls = onFrag ? onFrag.children.filter(c=>c.type==="el" && (c.tag==="code"||c.tag==="pre")) : [];
+  ok(codeEls.length===3, "settings (enabled): socket path + show/hide + new-note commands are all rendered");
+  const copyButtons = onFrag ? onFrag.children.filter(c=>c.type==="el" && c.tag==="button") : [];
+  ok(copyButtons.length===3, "settings (enabled): each command line has its own copy button");
+  if (copyButtons.length===3 && codeEls.length===3) {
+    lastClipboardText = null;
+    copyButtons[1].el.click();
+    ok(lastClipboardText === codeEls[1].text, "settings: copy button copies the exact command shown next to it (not another line's)");
+    ok(notices[notices.length-1] === "Copied to clipboard.", "settings: copying shows a confirmation Notice");
+    const expectedSubstr = process.platform==="win32" ? "NamedPipeClientStream" : process.platform==="darwin" ? "nc -U" : "socat";
+    ok(codeEls[1].text.includes(expectedSubstr), `settings: show/hide command matches this OS (${process.platform})`);
+    ok((codeEls[1].tag==="pre") === (process.platform==="win32"), "settings: multi-line (Windows) commands render as <pre> so newlines survive, single-line ones as <code>");
+  }
+  pSettingsOn.onunload();
 
   console.log(fail===0 ? "\nALL PASS" : `\n${fail} FAIL`);
   process.exit(fail===0?0:1);
