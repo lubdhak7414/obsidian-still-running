@@ -114,6 +114,7 @@ interface BackgroundTraySettings {
 	trayIconPath: string;
 	trayTooltip: string;
 	enableExternalToggle: boolean;
+	startMinimized: boolean;
 }
 
 const DEFAULT_SETTINGS: BackgroundTraySettings = {
@@ -123,6 +124,7 @@ const DEFAULT_SETTINGS: BackgroundTraySettings = {
 	trayIconPath: "",
 	trayTooltip: "{{vault}} - Still Running",
 	enableExternalToggle: false,
+	startMinimized: false,
 };
 
 // Load Node/Electron main process modules from the renderer.
@@ -198,6 +200,14 @@ export default class BackgroundTrayPlugin extends Plugin {
 
 		if (this.settings.createTrayIcon) await this.createTray();
 		if (this.settings.enableExternalToggle) await this.createIpcServer();
+
+		if (this.settings.startMinimized) {
+			try {
+				this.win?.hide();
+			} catch (e) {
+				console.error("Still Running: startMinimized hide failed", e);
+			}
+		}
 
 		// Maintain single purpose: do not register command palette / hotkey shortcuts.
 		// (All actions are provided via tray icon and right-click menu — Show/Hide, Relaunch, Quit.)
@@ -693,6 +703,18 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.runInBackground)
 					.onChange(async (v) => {
 						this.plugin.settings.runInBackground = v;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Start minimized to tray")
+			.setDesc("Launch Obsidian already hidden in the tray instead of showing the window on startup.")
+			.addToggle((t) =>
+				t
+					.setValue(this.plugin.settings.startMinimized)
+					.onChange(async (v) => {
+						this.plugin.settings.startMinimized = v;
 						await this.plugin.saveSettings();
 					})
 			);

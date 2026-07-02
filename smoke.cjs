@@ -141,6 +141,14 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   ok(!!p4.socketPath && fsReal.existsSync(p4.socketPath), "external toggle: recreate succeeds despite stale socket");
   p4.onunload();
 
+  // ── Start minimized to tray ──
+  fakeWin._visible = true;
+  const p5 = new PluginClass(app, { id:"obsidian-still-running" });
+  p5._data = { startMinimized: true };
+  await p5.onload();
+  ok(fakeWin._visible===false, "startMinimized: window hidden on load");
+  p5.onunload();
+
   console.log(fail===0 ? "\nALL PASS" : `\n${fail} FAIL`);
   process.exit(fail===0?0:1);
 })();
