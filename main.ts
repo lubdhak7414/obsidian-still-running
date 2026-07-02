@@ -4,9 +4,10 @@ import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
  * Still Running — keep Obsidian running in the system tray instead of quitting.
  */
 
-// Last-resort fallback icon (16x16 PNG). Normally use app.getFileIcon to get the actual Obsidian icon.
+// Last-resort fallback icon (64x64 PNG). Normally use app.getFileIcon to get the actual Obsidian icon;
+// this only shows up if that extraction fails.
 const DEFAULT_TRAY_ICON =
-	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR42mOosXr7nxLMMGrAqAGjBgwXAwBGOKIfCm+pOwAAAABJRU5ErkJggg==";
+	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAABmJLR0QA/wD/AP+gvaeTAAADwklEQVR4nO3aXWhTZxgH8P/zJI1zqxVtZ8Nm2I3FrUpXZUXoyEpHB8OLyYSIhbmxqyEiuFJqkZVGRdjGBBWGd8KGwqhsnSi70EpcWzrRTtfGdFQLReP6kbqsncuC5vQ8I7CLrasrJzkfac/7g1wl75tz/jxPPngfQFEURVEURbFfrC+xLvuAg8iJN41FEsWaV5pBaAXAEDmpa8vaN9Wvml7SAYgID/Ym3gHhUwDlc55OQuRQUiv/vL6etCUXwGDPZIMQjgKoWuClwyLSXB30X1gSAQz0Tq0H6YchCBlc2kUsTVW1/igWYwCxvvjqjPhaSPAhAF+O22hCOEWQtpdf9SewGALo75ciXzrxvhCOACgzadtpEvp4+cOZYxVbKx6hUAMY7JlsAOG4AJWwgAAjLHSgKrjmbEEFcKN7vNLDnP2AexM2INAVndFUXbvmZv575aE/MlZW5OU2EO0B4IG9dBDOZGZ5/yuvPTtuawCxWMynJUt3E9EhAUrgrBQEn6U8jz+prQ2kjS5mowtOtFxdmxwp6QbRsQK4+axnQGhP3c9E9m7/bq3RxV6jC6ZGM+WX7o5WPV9R/H3NG89t8XjoKThIy+jpzi+GrsV+nNoi4Oyvy/uWBvC35b/c+aNufOR2fPPr/okXKlfWwAE3fxi/fv70sF/XpS7XPbz5XIAuCPRfngjErj24HtwW8K9Y5QvABr9OpuJfnhiYmEk+yjt4rxkXlH6o1Vw8PZq2ui3+We4ATAnbC/NY2hZmlLvVAVjSFmaWuy0BmNUWVpS7rQHk0xZWlbsTARhqC6vL3bEAFmoLu8rd8QDma4vkzJ+wq9wLJYB/tUV0aAxOYrgcw+UYLsdwOYbLMVyO4XIMl2O4HMPl2OgC3aNnDynvocAIcE9kNmF5AEe+qouzXloByD4Av8NhBKSI5GBRMb947lZjPIf1uQs3Rspkltskj6OxPP4M6UI4w5nM/m9+3mXv0dhc4VB35SzhKJHxw9EcA7jCLE1fDzQ6ezg6V3hHT4NOchwGjseNBEDAiAAHOqM7zxbkt0C4I9g1sfLpaiH6AMADE7eeBqQ1nS7ZaObNWzoiEw71rdYp0wKi/x2RWaACNAJOCT1u6xx8d3GMyMz1Uah3PbN+GJh/SOpJAQjQJeCmc9Edi3NI6gmfD/8Zk5sngGEImjtv7bywpH4JhjuCXfxScJOA3gNkcp6XJIWw77fS8o123bxjo7LhUKRY93AzhFqjQ2MMopPCvvZvf3rb9lFZR4VDkXVvbehwdFhaURRFURQFbvUXGt/Tnv5lS68AAAAASUVORK5CYII=";
 
 // ── Electron (main process API accessed from renderer) minimal types ──────────
 // Declare only used members narrowly, not any, to avoid unsafe-access warnings.
