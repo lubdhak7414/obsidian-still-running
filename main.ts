@@ -716,10 +716,12 @@ export default class BackgroundTrayPlugin extends Plugin {
 				}
 			}
 
-			const folder = this.settings.quickNoteFolder.replace(
-				/^\/+|\/+$/g,
-				""
-			);
+			// Reject ".."/"." segments so the setting can't escape the vault root.
+			const folder = this.settings.quickNoteFolder
+				.split("/")
+				.map((s) => s.trim())
+				.filter((s) => s.length > 0 && s !== "." && s !== "..")
+				.join("/");
 			if (folder && !this.app.vault.getAbstractFileByPath(folder)) {
 				try {
 					await this.app.vault.createFolder(folder);

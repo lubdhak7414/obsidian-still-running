@@ -191,6 +191,14 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   ok(vaultFiles.size > filesBefore2, "createQuickNote: template-path-is-a-folder falls back to blank note (no abort)");
   pNote2.onunload();
 
+  // ".." in the configured folder must not escape the vault root
+  const pNote4 = new PluginClass(app, { id:"obsidian-still-running" });
+  pNote4._data = { quickNoteFolder: "../../etc" };
+  await pNote4.onload();
+  await pNote4.createQuickNote();
+  ok(![...vaultFiles.keys()].some(k=>k.includes("..")), "createQuickNote: '..' in folder setting is stripped");
+  pNote4.onunload();
+
   // ── Start minimized to tray ──
   fakeWin._visible = true;
   const p5 = new PluginClass(app, { id:"obsidian-still-running" });
