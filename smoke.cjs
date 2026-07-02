@@ -13,7 +13,8 @@ class Plugin {
 class PluginSettingTab { constructor(app,plugin){ this.app=app; this.plugin=plugin; this.containerEl={empty(){},}; } }
 class Setting { constructor(){} setName(){return this;} setDesc(){return this;} addToggle(cb){cb({setValue(){return this;},onChange(){return this;}});return this;} addText(cb){cb({setPlaceholder(){return this;},setValue(){return this;},onChange(){return this;}});return this;} }
 let notices=[]; class Notice { constructor(m){ notices.push(m); } }
-const obsidianStub = { Plugin, PluginSettingTab, Setting, Notice, App: class {} };
+const moment = () => ({ format(){ return "2026-01-01 000000"; } });
+const obsidianStub = { Plugin, PluginSettingTab, Setting, Notice, App: class {}, moment };
 
 // ── @electron/remote stub ──
 const log = { listeners:{}, hidden:0, shown:0, focused:0, trayCreated:0, trayDestroyed:0, prevented:0, quit:0 };
@@ -58,7 +59,18 @@ global.window = {
 };
 
 const PluginClass = require("./main.js").default || require("./main.js");
-const app = { vault:{ getName(){ return "TestVault"; } } };
+// ── fake vault/workspace (in-memory) for quick-note test ──
+const vaultFiles = new Map();
+const openedFiles = [];
+const fakeVault = {
+  getName(){ return "TestVault"; },
+  getAbstractFileByPath(p){ return vaultFiles.has(p) ? { path:p } : null; },
+  async read(file){ return vaultFiles.get(file.path) ?? ""; },
+  async create(path, data){ vaultFiles.set(path, data); return { path }; },
+  async createFolder(path){ vaultFiles.set(path+"/.folder", ""); },
+};
+const fakeWorkspace = { getLeaf(){ return { async openFile(f){ openedFiles.push(f.path); } }; } };
+const app = { vault: fakeVault, workspace: fakeWorkspace };
 const p = new PluginClass(app, { id:"obsidian-still-running" });
 
 (async () => {
@@ -140,6 +152,28 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   await p4.refreshIpcServer();
   ok(!!p4.socketPath && fsReal.existsSync(p4.socketPath), "external toggle: recreate succeeds despite stale socket");
   p4.onunload();
+
+  // ── Quick note ──
+  const pNote = new PluginClass(app, { id:"obsidian-still-running" });
+  pNote._data = { quickNoteFolder:"Inbox", quickNoteTemplatePath:"" };
+  await pNote.onload();
+  const filesBefore = vaultFiles.size;
+  await pNote.createQuickNote();
+  ok(vaultFiles.size > filesBefore, "createQuickNote: file created in vault");
+  ok([...vaultFiles.keys()].some(k=>k.startsWith("Inbox/") && k.endsWith(".md")), "createQuickNote: created under configured folder");
+  ok(openedFiles.length>0, "createQuickNote: opened the new file");
+  // external toggle: "note" command over the socket
+  pNote.settings.enableExternalToggle = true;
+  await pNote.refreshIpcServer();
+  const openedBefore = openedFiles.length;
+  await new Promise((resolve, reject) => {
+    const client = net.createConnection(pNote.socketPath, () => client.end("note"));
+    client.on("close", resolve);
+    client.on("error", reject);
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  ok(openedFiles.length > openedBefore, "external toggle: 'note' command creates a quick note");
+  pNote.onunload();
 
   // ── Start minimized to tray ──
   fakeWin._visible = true;

@@ -1,4 +1,12 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import {
+	App,
+	moment,
+	Notice,
+	Plugin,
+	PluginSettingTab,
+	Setting,
+	TFile,
+} from "obsidian";
 
 /*
  * Still Running — keep Obsidian running in the system tray instead of quitting.
@@ -82,6 +90,8 @@ interface ElectronRemote {
 // ── Node built-in modules (local socket for external toggle) minimal types ──────────────────
 interface NetSocket {
 	end(): void;
+	on(event: "data", listener: (chunk: Buffer) => void): void;
+	on(event: "end", listener: () => void): void;
 }
 
 interface NetServer {
@@ -115,6 +125,8 @@ interface BackgroundTraySettings {
 	trayTooltip: string;
 	enableExternalToggle: boolean;
 	startMinimized: boolean;
+	quickNoteFolder: string;
+	quickNoteTemplatePath: string;
 }
 
 const DEFAULT_SETTINGS: BackgroundTraySettings = {
@@ -125,6 +137,8 @@ const DEFAULT_SETTINGS: BackgroundTraySettings = {
 	trayTooltip: "{{vault}} - Still Running",
 	enableExternalToggle: false,
 	startMinimized: false,
+	quickNoteFolder: "",
+	quickNoteTemplatePath: "",
 };
 
 // Load Node/Electron main process modules from the renderer.
@@ -441,6 +455,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 
 			const menu = Menu.buildFromTemplate([
 				{ label: "Show / Hide", click: () => this.toggleWindow() },
+				{ label: "New note", click: () => this.createQuickNote() },
 				{ type: "separator" },
 				{ label: "Relaunch Obsidian", click: () => this.relaunch() },
 				{
@@ -540,15 +555,26 @@ export default class BackgroundTrayPlugin extends Plugin {
 				}
 			}
 			const server = net.createServer((socket) => {
-				try {
-					this.toggleWindow();
-				} finally {
+				let data = "";
+				socket.on("data", (chunk) => {
+					data += chunk.toString();
+				});
+				socket.on("end", () => {
 					try {
-						socket.end();
-					} catch {
-						/* ignore */
+						const cmd = data.trim().toLowerCase();
+						if (cmd === "note" || cmd === "new-note") {
+							void this.createQuickNote();
+						} else {
+							this.toggleWindow();
+						}
+					} finally {
+						try {
+							socket.end();
+						} catch {
+							/* ignore */
+						}
 					}
-				}
+				});
 			});
 			server.on("error", (err) => {
 				console.error("Still Running: external toggle socket error", err);
@@ -631,6 +657,57 @@ export default class BackgroundTrayPlugin extends Plugin {
 			win.focus();
 		} catch {
 			/* ignore window restore failure */
+		}
+	}
+
+	// ── Quick note ────────────────────────────────────────────────────────────
+	// Creates a new note (optionally from a template) in the configured folder, opens it,
+	// and shows the window. Reachable from the tray menu and the external toggle socket
+	// (send "note" instead of an empty payload), so it can be bound to a global hotkey.
+	async createQuickNote() {
+		try {
+			let content = "";
+			const templatePath = this.settings.quickNoteTemplatePath.trim();
+			if (templatePath) {
+				const templateFile = this.app.vault.getAbstractFileByPath(
+					templatePath
+				) as TFile | null;
+				if (templateFile) {
+					content = await this.app.vault.read(templateFile);
+				} else {
+					console.error(
+						"Still Running: quick note template not found:",
+						templatePath
+					);
+				}
+			}
+
+			const folder = this.settings.quickNoteFolder.replace(
+				/^\/+|\/+$/g,
+				""
+			);
+			if (folder && !this.app.vault.getAbstractFileByPath(folder)) {
+				try {
+					await this.app.vault.createFolder(folder);
+				} catch {
+					/* folder already exists or was created concurrently */
+				}
+			}
+
+			const stamp = moment().format("YYYY-MM-DD HHmmss");
+			const filename = `Untitled ${stamp}.md`;
+			const path = folder ? `${folder}/${filename}` : filename;
+
+			const file = await this.app.vault.create(path, content);
+			this.showWindow();
+			try {
+				await this.app.workspace.getLeaf(false).openFile(file);
+			} catch {
+				/* file was created; opening it in a leaf is best-effort */
+			}
+		} catch (e) {
+			console.error("Still Running: failed to create quick note", e);
+			new Notice("Still Running: Failed to create quick note.");
 		}
 	}
 
@@ -775,13 +852,43 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 					})
 			);
 
+		new Setting(containerEl)
+			.setName("New note folder")
+			.setDesc(
+				"Folder for notes created via the tray menu's 'New note' / external toggle 'note' command. Leave empty for vault root."
+			)
+			.addText((txt) =>
+				txt
+					.setPlaceholder("(vault root)")
+					.setValue(this.plugin.settings.quickNoteFolder)
+					.onChange(async (v) => {
+						this.plugin.settings.quickNoteFolder = v;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("New note template")
+			.setDesc(
+				"Vault path to a template file whose content is used for new notes. Leave empty for a blank note."
+			)
+			.addText((txt) =>
+				txt
+					.setPlaceholder("Templates/Daily.md")
+					.setValue(this.plugin.settings.quickNoteTemplatePath)
+					.onChange(async (v) => {
+						this.plugin.settings.quickNoteTemplatePath = v;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		const socketPath = this.plugin.getSocketPath();
 		new Setting(containerEl)
 			.setName("Enable external toggle (advanced)")
 			.setDesc(
 				(this.plugin.settings.enableExternalToggle && socketPath
-					? `Enabled — Connect to the path below to toggle Show/Hide (for OS-level global hotkey integration):\n${socketPath}\nExample (Linux/macOS): echo x | socat - UNIX-CONNECT:${socketPath}`
-					: "Expose Show/Hide toggle via a local socket (Unix domain socket / Windows named pipe) to allow triggering from outside (e.g., OS global hotkeys).") +
+					? `Enabled — Connect to the path below to toggle Show/Hide, or send "note" to create a new note (for OS-level global hotkey integration):\n${socketPath}\nExample (Linux/macOS): echo x | socat - UNIX-CONNECT:${socketPath}\nExample (new note): echo note | socat - UNIX-CONNECT:${socketPath}`
+					: "Expose Show/Hide toggle (and new-note creation) via a local socket (Unix domain socket / Windows named pipe) to allow triggering from outside (e.g., OS global hotkeys).") +
 					"\nKeyboard shortcut setup help: https://github.com/lubdhak7414/obsidian-still-running#show--hide-with-a-global-keyboard-shortcut"
 			)
 			.addToggle((t) =>
