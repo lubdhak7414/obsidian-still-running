@@ -215,34 +215,40 @@ function getExternalToggleCommands(socketPath: string): {
 	};
 }
 
-// Renders "<label> <code>command</code> [copy button]" as its own line in a settings
-// description fragment. Multi-line commands (Windows PowerShell) use <pre> so the
-// newlines the user needs actually render, instead of collapsing to spaces like plain text.
+// Renders "<label> <code>command</code> [copy button]" as a single flex row (see
+// .background-tray-command-row in styles.css) in a settings description fragment, so the
+// copy button sits inline next to the command instead of wrapping onto its own line.
+// Multi-line commands (Windows PowerShell) use <pre> so the newlines the user needs
+// actually render, instead of collapsing to spaces like plain text.
 function appendCopyableCommand(
 	frag: DocumentFragment,
 	label: string,
 	command: string
 ): void {
-	frag.createEl("br");
-	frag.appendText(label + " ");
-	if (command.includes("\n")) {
-		frag.createEl("pre", { text: command });
-	} else {
-		frag.createEl("code", { text: command });
-	}
-	frag.createEl(
-		"button",
-		{ cls: "clickable-icon", attr: { "aria-label": "Copy to clipboard" } },
-		(btn) => {
-			setIcon(btn, "copy");
-			btn.addEventListener("click", () => {
-				navigator.clipboard.writeText(command).catch((e) => {
-					console.error("Still Running: clipboard write failed", e);
-				});
-				new Notice("Copied to clipboard.");
-			});
+	frag.createEl("div", { cls: "background-tray-command-row" }, (row) => {
+		row.createEl("span", {
+			text: label,
+			cls: "background-tray-command-label",
+		});
+		if (command.includes("\n")) {
+			row.createEl("pre", { text: command });
+		} else {
+			row.createEl("code", { text: command });
 		}
-	);
+		row.createEl(
+			"button",
+			{ cls: "clickable-icon", attr: { "aria-label": "Copy to clipboard" } },
+			(btn) => {
+				setIcon(btn, "copy");
+				btn.addEventListener("click", () => {
+					navigator.clipboard.writeText(command).catch((e) => {
+						console.error("Still Running: clipboard write failed", e);
+					});
+					new Notice("Copied to clipboard.");
+				});
+			}
+		);
+	});
 }
 
 export default class BackgroundTrayPlugin extends Plugin {

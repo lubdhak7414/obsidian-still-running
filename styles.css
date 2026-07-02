@@ -1,3 +1,30 @@
 /* Background Tray — No runtime UI. All tray/window behavior is Electron-side.
-   Settings tab uses Obsidian's default styles, so no custom CSS needed.
-   (Per manifest rules, the file can exist empty.) */
+   Settings tab uses Obsidian's default styles except for the external-toggle
+   command rows below, which need layout Setting.setDesc() alone can't give. */
+
+.background-tray-command-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 4px 0;
+}
+
+.background-tray-command-row .background-tray-command-label {
+	flex: 0 0 auto;
+	white-space: nowrap;
+	color: var(--text-muted);
+}
+
+.background-tray-command-row code,
+.background-tray-command-row pre {
+	flex: 1 1 auto;
+	min-width: 0;
+	margin: 0;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	word-break: break-all;
+}
+
+.background-tray-command-row .clickable-icon {
+	flex: 0 0 auto;
+}

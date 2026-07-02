@@ -16,23 +16,30 @@ class Setting { constructor(containerEl){ this.containerEl=containerEl; lastSett
 let notices=[]; class Notice { constructor(m){ notices.push(m); } }
 const moment = () => ({ format(){ return "2026-01-01 000000"; } });
 class TFile { constructor(path){ this.path=path; } }
-// Minimal fake DocumentFragment supporting the subset of the real Obsidian API main.ts
-// uses (appendText/createEl), so setDesc() fragments built for the settings page can be
-// inspected by tests instead of silently degrading to opaque strings.
-function createFragment(cb){
-  const frag = { children: [] };
-  frag.appendText = (t) => { frag.children.push({ type:"text", text:t }); };
-  frag.createEl = (tag, o, callback) => {
-    const el = {
+// Minimal fake DocumentFragment/HTMLElement supporting the subset of the real Obsidian API
+// main.ts uses (appendText/createEl, nestable — real Obsidian augments HTMLElement.prototype
+// with createEl so elements created via createEl can themselves createEl children), so
+// setDesc() fragments built for the settings page can be inspected by tests instead of
+// silently degrading to opaque strings.
+function makeContainer(){
+  const container = { children: [] };
+  container.appendText = (t) => { container.children.push({ type:"text", text:t }); };
+  container.createEl = (tag, o, callback) => {
+    const el = makeContainer();
+    Object.assign(el, {
       tag, text:(o&&o.text)||"", href:o&&o.href, cls:o&&o.cls,
       _listeners:{},
       addEventListener(ev,fn){ (this._listeners[ev]=this._listeners[ev]||[]).push(fn); },
       click(){ (this._listeners["click"]||[]).forEach(fn=>fn()); },
-    };
-    frag.children.push({ type:"el", tag, text:el.text, href:el.href, el });
+    });
+    container.children.push({ type:"el", tag, text:el.text, href:el.href, cls:el.cls, el });
     if (callback) callback(el);
     return el;
   };
+  return container;
+}
+function createFragment(cb){
+  const frag = makeContainer();
   if (cb) cb(frag);
   return frag;
 }
@@ -354,10 +361,12 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   pSettingsOn._tabs[0].display();
   const extToggleOn = lastSettings.find(s => s.name === "Enable external toggle (advanced)");
   const onFrag = extToggleOn && extToggleOn.desc;
-  const codeEls = onFrag ? onFrag.children.filter(c=>c.type==="el" && (c.tag==="code"||c.tag==="pre")) : [];
-  ok(codeEls.length===3, "settings (enabled): socket path + show/hide + new-note commands are all rendered");
-  const copyButtons = onFrag ? onFrag.children.filter(c=>c.type==="el" && c.tag==="button") : [];
-  ok(copyButtons.length===3, "settings (enabled): each command line has its own copy button");
+  const rows = onFrag ? onFrag.children.filter(c=>c.type==="el" && c.cls==="background-tray-command-row").map(c=>c.el) : [];
+  ok(rows.length===3, "settings (enabled): socket path + show/hide + new-note commands each render as their own row");
+  const codeEls = rows.map(r => r.children.find(c=>c.type==="el" && (c.tag==="code"||c.tag==="pre"))).filter(Boolean);
+  ok(codeEls.length===3, "settings (enabled): each row contains a code/pre command element");
+  const copyButtons = rows.map(r => r.children.find(c=>c.type==="el" && c.tag==="button")).filter(Boolean);
+  ok(copyButtons.length===3, "settings (enabled): each command row has its own copy button");
   if (copyButtons.length===3 && codeEls.length===3) {
     lastClipboardText = null;
     copyButtons[1].el.click();
