@@ -178,7 +178,6 @@ export default class BackgroundTrayPlugin extends Plugin {
 	private windowCreatedHandler:
 		| ((event: ElectronEvent, w: ElectronWindow) => void)
 		| null = null;
-	private lastRelaunchAt = 0;
 	private reallyQuitting = false;
 	private trayEpoch = 0;
 	// Set by the "close" event, which Electron always fires before "beforeunload" for a
@@ -186,6 +185,8 @@ export default class BackgroundTrayPlugin extends Plugin {
 	// "Reload app without saving" / plugin-update reloads aren't hijacked into a hide-to-tray.
 	private closeEventFired = false;
 	private closeEventResetTimer: ReturnType<typeof setTimeout> | null = null;
+	private awaitingPickerWindow = false;
+	private awaitingPickerTimer: ReturnType<typeof setTimeout> | null = null;
 	private ipcServer: NetServer | null = null;
 	private socketPath: string | null = null;
 
@@ -360,7 +361,15 @@ export default class BackgroundTrayPlugin extends Plugin {
 
 		this.secondInstanceHandler = () => {
 			if (!this.settings.focusOnRelaunch) return;
-			this.lastRelaunchAt = Date.now();
+			// Only the *next* new window is treated as the vault picker — not every window
+			// created within the next 4s, which could otherwise catch a legitimate popout
+			// pane the user opens shortly after relaunching. Safety timeout in case no
+			// picker window ever arrives (e.g. Obsidian reuses the vault without a dialog).
+			this.awaitingPickerWindow = true;
+			if (this.awaitingPickerTimer) clearTimeout(this.awaitingPickerTimer);
+			this.awaitingPickerTimer = setTimeout(() => {
+				this.awaitingPickerWindow = false;
+			}, 4000);
 			this.showWindow();
 		};
 		this.windowCreatedHandler = (
@@ -375,11 +384,13 @@ export default class BackgroundTrayPlugin extends Plugin {
 				/* id access unavailable */
 			}
 			if (id === myId) return; // never touch our window
-			// New window created shortly after second-instance = vault selection dialog.
-			if (
-				this.lastRelaunchAt > 0 &&
-				Date.now() - this.lastRelaunchAt < 4000
-			) {
+			// Only the first window created after second-instance = vault selection dialog.
+			if (this.awaitingPickerWindow) {
+				this.awaitingPickerWindow = false;
+				if (this.awaitingPickerTimer) {
+					clearTimeout(this.awaitingPickerTimer);
+					this.awaitingPickerTimer = null;
+				}
 				// ★ Prevent flicker/exit regression:
 				//   - Hide the dialog immediately when it tries to show (ready-to-show/show) to avoid screen flicker.
 				//   - Don't close the new dialog. In Obsidian 1.12/Electron 39, even with a hidden main window,
@@ -453,6 +464,11 @@ export default class BackgroundTrayPlugin extends Plugin {
 		}
 		this.secondInstanceHandler = null;
 		this.windowCreatedHandler = null;
+		if (this.awaitingPickerTimer) {
+			clearTimeout(this.awaitingPickerTimer);
+			this.awaitingPickerTimer = null;
+		}
+		this.awaitingPickerWindow = false;
 	}
 
 	// ── Tray ───────────────────────────────────────────────────────

@@ -117,6 +117,17 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   ok(picker.closed===0, "vault selection dialog: not closed (prevents window-all-closed exit flow)");
   ok(picker.skipTaskbar===true, "vault selection dialog: excluded from taskbar");
   ok(log.quit===quitBefore, "★exit regression prevention: existing Obsidian not quit/closed (quit not called)");
+  // A second, later window in the same relaunch span (e.g. a legitimate popout pane the
+  // user opens right after relaunching) must NOT be caught by the picker-hiding logic —
+  // only the single next window after second-instance is treated as the picker.
+  const popout={ id:3, _visible:true, hidden:0, closed:0, skipTaskbar:false, _ev:{},
+    on(ev,fn){ (this._ev[ev]=this._ev[ev]||[]).push(fn); },
+    fire(ev){ (this._ev[ev]||[]).forEach(f=>f()); },
+    hide(){ this._visible=false; this.hidden++; }, close(){ this.closed++; },
+    setSkipTaskbar(v){ this.skipTaskbar=v; },
+    isDestroyed(){ return this.closed>0; }, isVisible(){ return this._visible; } };
+  remoteStub.app._emit("browser-window-created", {preventDefault(){}}, popout);
+  ok(popout.hidden===0 && popout.skipTaskbar===false, "single-instance: later window in same relaunch span is left untouched");
   // onunload: complete cleanup (no leaks)
   p.onunload();
   ok((appEvents["second-instance"]||[]).length===0 && (appEvents["browser-window-created"]||[]).length===0, "onunload: single-instance listeners removed (no leaks)");
