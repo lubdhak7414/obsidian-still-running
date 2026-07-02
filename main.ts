@@ -698,14 +698,13 @@ export default class BackgroundTrayPlugin extends Plugin {
 			let content = "";
 			const templatePath = this.settings.quickNoteTemplatePath.trim();
 			if (templatePath) {
-				const templateFile = this.app.vault.getAbstractFileByPath(
-					templatePath
-				) as TFile | null;
-				if (templateFile) {
+				const templateFile =
+					this.app.vault.getAbstractFileByPath(templatePath);
+				if (templateFile instanceof TFile) {
 					content = await this.app.vault.read(templateFile);
 				} else {
 					console.error(
-						"Still Running: quick note template not found:",
+						"Still Running: quick note template not found (or not a file):",
 						templatePath
 					);
 				}

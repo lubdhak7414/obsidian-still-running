@@ -14,7 +14,8 @@ class PluginSettingTab { constructor(app,plugin){ this.app=app; this.plugin=plug
 class Setting { constructor(){} setName(){return this;} setDesc(){return this;} addToggle(cb){cb({setValue(){return this;},onChange(){return this;}});return this;} addText(cb){cb({setPlaceholder(){return this;},setValue(){return this;},onChange(){return this;}});return this;} }
 let notices=[]; class Notice { constructor(m){ notices.push(m); } }
 const moment = () => ({ format(){ return "2026-01-01 000000"; } });
-const obsidianStub = { Plugin, PluginSettingTab, Setting, Notice, App: class {}, moment };
+class TFile { constructor(path){ this.path=path; } }
+const obsidianStub = { Plugin, PluginSettingTab, Setting, Notice, App: class {}, moment, TFile };
 
 // ── @electron/remote stub ──
 const log = { listeners:{}, hidden:0, shown:0, focused:0, trayCreated:0, trayDestroyed:0, prevented:0, quit:0 };
@@ -61,13 +62,18 @@ global.window = {
 const PluginClass = require("./main.js").default || require("./main.js");
 // ── fake vault/workspace (in-memory) for quick-note test ──
 const vaultFiles = new Map();
+const vaultFolders = new Set();
 const openedFiles = [];
+class TFolder { constructor(path){ this.path=path; } }
 const fakeVault = {
   getName(){ return "TestVault"; },
-  getAbstractFileByPath(p){ return vaultFiles.has(p) ? { path:p } : null; },
+  getAbstractFileByPath(p){
+    if (vaultFolders.has(p)) return new TFolder(p);
+    return vaultFiles.has(p) ? new TFile(p) : null;
+  },
   async read(file){ return vaultFiles.get(file.path) ?? ""; },
-  async create(path, data){ vaultFiles.set(path, data); return { path }; },
-  async createFolder(path){ vaultFiles.set(path+"/.folder", ""); },
+  async create(path, data){ vaultFiles.set(path, data); return new TFile(path); },
+  async createFolder(path){ vaultFolders.add(path); },
 };
 const fakeWorkspace = { getLeaf(){ return { async openFile(f){ openedFiles.push(f.path); } }; } };
 const app = { vault: fakeVault, workspace: fakeWorkspace };
@@ -174,6 +180,16 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   await new Promise((r) => setTimeout(r, 20));
   ok(openedFiles.length > openedBefore, "external toggle: 'note' command creates a quick note");
   pNote.onunload();
+
+  // template path pointing at a folder must not abort note creation (falls back to blank)
+  vaultFolders.add("Templates");
+  const pNote2 = new PluginClass(app, { id:"obsidian-still-running" });
+  pNote2._data = { quickNoteTemplatePath: "Templates" };
+  await pNote2.onload();
+  const filesBefore2 = vaultFiles.size;
+  await pNote2.createQuickNote();
+  ok(vaultFiles.size > filesBefore2, "createQuickNote: template-path-is-a-folder falls back to blank note (no abort)");
+  pNote2.onunload();
 
   // ── Start minimized to tray ──
   fakeWin._visible = true;
