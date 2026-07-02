@@ -793,9 +793,10 @@ export default class BackgroundTrayPlugin extends Plugin {
 				}
 			}
 
-			// Reject ".."/"." segments so the setting can't escape the vault root.
+			// Reject ".."/"." segments so the setting can't escape the vault root. Split on
+			// both separators in case the setting was pasted in as a Windows-style path.
 			const folder = this.settings.quickNoteFolder
-				.split("/")
+				.split(/[/\\]/)
 				.map((s) => s.trim())
 				.filter((s) => s.length > 0 && s !== "." && s !== "..")
 				.join("/");

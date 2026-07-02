@@ -246,6 +246,22 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   ok(![...vaultFiles.keys()].some(k=>k.includes("..")), "createQuickNote: '..' in folder setting is stripped");
   pNote4.onunload();
 
+  // Windows-style backslash-separated folder path must be split like "/"
+  const pNote5 = new PluginClass(app, { id:"obsidian-still-running" });
+  pNote5._data = { quickNoteFolder: "Inbox\\Sub" };
+  await pNote5.onload();
+  await pNote5.createQuickNote();
+  ok([...vaultFiles.keys()].some(k=>k.startsWith("Inbox/Sub/") && k.endsWith(".md")), "createQuickNote: backslash-separated folder path is split like '/'");
+  pNote5.onunload();
+
+  // ".." segments stripped even when backslash-separated
+  const pNote6 = new PluginClass(app, { id:"obsidian-still-running" });
+  pNote6._data = { quickNoteFolder: "..\\..\\etc" };
+  await pNote6.onload();
+  await pNote6.createQuickNote();
+  ok(![...vaultFiles.keys()].some(k=>k.includes("..")), "createQuickNote: '..' stripped even when backslash-separated");
+  pNote6.onunload();
+
   // two notes created within the same second (same moment() stamp) must not collide
   const pNote3 = new PluginClass(app, { id:"obsidian-still-running" });
   await pNote3.onload();
