@@ -579,6 +579,9 @@ export default class BackgroundTrayPlugin extends Plugin {
 	// by opening a local socket (Unix domain socket / Windows named pipe) at a vault-specific fixed path.
 	// On connection, only call toggleWindow() — message parsing not needed.
 	getSocketPath(): string {
+		// In degraded mode (no Electron/Node access — see onload()), `process` itself may be
+		// unavailable; the settings tab still renders and calls this unconditionally.
+		if (typeof process === "undefined") return "";
 		const rawVault = this.app.vault.getName();
 		// Sanitizing collapses distinct vault names (e.g. "My Vault" and "My!Vault") to the
 		// same string — append a short hash of the raw name so they still get distinct paths.
