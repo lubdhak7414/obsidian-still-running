@@ -11,7 +11,7 @@ import {
 } from "obsidian";
 
 /*
- * Still Running — keep Obsidian running in the system tray instead of quitting.
+ * Still Running - keep Obsidian running in the system tray instead of quitting.
  */
 
 // Last-resort fallback icon (64x64 PNG). Normally use app.getFileIcon to get the actual Obsidian icon;
@@ -39,7 +39,7 @@ interface ElectronWebContents {
 interface ElectronWindow {
 	id: number;
 	// Optional: only used (behind try/catch) to positively identify Obsidian's vault-picker
-	// window by the URL it loaded — some remote bridges may not expose it.
+	// window by the URL it loaded - some remote bridges may not expose it.
 	webContents?: ElectronWebContents;
 	hide(): void;
 	show(): void;
@@ -289,7 +289,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 		this.remote = getRemote();
 		if (!this.remote) {
 			new Notice(
-				"Still Running: Cannot access Electron — tray features are unavailable in this build."
+				"Still Running: Cannot access Electron - tray features are unavailable in this build."
 			);
 			// App must never crash. Show only settings tab and disable features.
 			this.addSettingTab(new BackgroundTraySettingTab(this.app, this));
@@ -304,8 +304,8 @@ export default class BackgroundTrayPlugin extends Plugin {
 		}
 
 		// ★ Close interception uses two layers:
-		//   (1) beforeunload (renderer-only event) — primary defense, reliably vetoed in Electron 39.
-		//   (2) window.on("close") (remote) — fallback for some environments. In Electron 39 @electron/remote,
+		//   (1) beforeunload (renderer-only event) - primary defense, reliably vetoed in Electron 39.
+		//   (2) window.on("close") (remote) - fallback for some environments. In Electron 39 @electron/remote,
 		//       preventDefault is observed to be ignored (see 01. Spec §3.1·§3.3) → beforeunload is the actual mechanism.
 		this.registerBeforeUnload();
 		this.registerCloseInterception();
@@ -315,7 +315,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 
 		// Restore existing window on relaunch when hidden in tray (+ suppress vault selection
 		// dialog). This feature reverse-engineers Obsidian's own relaunch handling, so it's the
-		// most likely piece to misbehave on a new Obsidian/Electron build — it registers *after*
+		// most likely piece to misbehave on a new Obsidian/Electron build - it registers *after*
 		// the core tray/close/hide features and is fenced by its own try/catch (on top of the
 		// internal ones), so no failure in it can ever block the rest of onload().
 		try {
@@ -336,12 +336,12 @@ export default class BackgroundTrayPlugin extends Plugin {
 		}
 
 		// Maintain single purpose: do not register command palette / hotkey shortcuts.
-		// (All actions are provided via tray icon and right-click menu — Show/Hide, Relaunch, Quit.)
+		// (All actions are provided via tray icon and right-click menu - Show/Hide, Relaunch, Quit.)
 		this.addSettingTab(new BackgroundTraySettingTab(this.app, this));
 	}
 
 	onunload() {
-		// 01. Spec §3.4 cleanup checklist — when disabled, behavior 100% reverts.
+		// 01. Spec §3.4 cleanup checklist - when disabled, behavior 100% reverts.
 		this.removeBeforeUnload();
 		this.removeCloseInterception();
 		this.removeSingleInstance();
@@ -373,7 +373,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 				!this.reallyQuitting &&
 				this.closeEventFired
 			) {
-				// Consume the flag now — a reload's beforeunload arriving shortly after
+				// Consume the flag now - a reload's beforeunload arriving shortly after
 				// (within the 1000ms reset window) must not also be hijacked as a close.
 				this.closeEventFired = false;
 				if (this.closeEventResetTimer) {
@@ -381,7 +381,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 					this.closeEventResetTimer = null;
 				}
 				e.preventDefault();
-				// Electron: cancel close (returnValue is deprecated type — workaround via cast)
+				// Electron: cancel close (returnValue is deprecated type - workaround via cast)
 				(e as { returnValue: boolean }).returnValue = false;
 				try {
 					this.win?.hide(); // hide to tray
@@ -458,33 +458,33 @@ export default class BackgroundTrayPlugin extends Plugin {
 	// to appear as "return to existing window". (Spec §4.6)
 	//
 	// Obsidian's relaunch handling does NOT go through Electron's native "second-instance"
-	// event on Linux/macOS — the relaunched process instead forwards its argv to the running
+	// event on Linux/macOS - the relaunched process instead forwards its argv to the running
 	// instance over a private Unix socket (~/.obsidian-cli.sock), and *that* handler shows the
 	// picker window. Electron's "second-instance" still fires (the relaunch also fails
-	// app.requestSingleInstanceLock()), but it's a second, independent, unordered signal — it
+	// app.requestSingleInstanceLock()), but it's a second, independent, unordered signal - it
 	// can arrive before or after the picker window is created. Gating "is this new window the
 	// picker" on a flag armed by "second-instance" is therefore a race: previously we only
 	// intercepted picker windows created *after* second-instance had already set the flag,
 	// which silently failed whenever the socket path won the race. Instead the primary gate is
 	// live state that doesn't depend on event ordering: whether our own window is currently
 	// hidden. Any window created while we're hidden and focusOnRelaunch is on can only be the
-	// picker — the user can't trigger a legitimate new pane from a hidden, unfocused window.
+	// picker - the user can't trigger a legitimate new pane from a hidden, unfocused window.
 	// One wrinkle: when second-instance *does* fire first, its handler eagerly shows our window
 	// (nice for snappy restore), which would make the live check blind to a picker that shows
 	// up a moment later. hiddenAtRelaunchStart is a short-lived snapshot taken right before that
-	// eager show, covering that ordering too — it's a convenience, not the correctness fix.
+	// eager show, covering that ordering too - it's a convenience, not the correctness fix.
 	//
 	// On top of the hidden-state gate, the window is *positively identified* before being
 	// hidden: the vault picker loads Obsidian's starter.html, so once the new window's URL is
-	// readable (webContents.getURL()) and says it's something else — e.g. another vault's
-	// window opened via obsidian:// while we're hidden — it is spared. An empty URL just means
+	// readable (webContents.getURL()) and says it's something else - e.g. another vault's
+	// window opened via obsidian:// while we're hidden - it is spared. An empty URL just means
 	// "hasn't loaded yet" (the picker starts life at "" too, and can't be visible before its
 	// load resolves), and an unreadable URL (remote bridge doesn't expose webContents) falls
 	// back to the hidden-state gate alone.
 	//
 	// Failure discipline: this whole feature is reverse-engineered from Obsidian's minified
 	// relaunch handling, so it runs against the least-documented Electron surface in the
-	// plugin. Every step — registration, both handlers, cleanup — is individually fenced with
+	// plugin. Every step - registration, both handlers, cleanup - is individually fenced with
 	// try/catch: no matter what a real @electron/remote proxy throws, it must degrade to a
 	// silent no-op and never take tray/close/hide down with it.
 	private registerSingleInstance() {
@@ -495,7 +495,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 			const app = remote.app;
 			this.removeSingleInstance(); // duplicate registration guard
 
-			// null (not -1) on failure — a freshly created window's id can be momentarily
+			// null (not -1) on failure - a freshly created window's id can be momentarily
 			// unreadable through @electron/remote (browser-window-created fires very early,
 			// sometimes before the remote proxy is fully registered), and defaulting both this
 			// and the new window's id to the same sentinel would make an unrelated picker window
@@ -544,7 +544,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 				}
 			};
 			// Registered separately so a failure of one (e.g. prependListener not proxied by
-			// this remote bridge) can't block the other — the browser-window-created hook is
+			// this remote bridge) can't block the other - the browser-window-created hook is
 			// the one that actually suppresses the picker; second-instance is best-effort
 			// (Obsidian's own relaunch path on Linux/macOS doesn't rely on it, see above).
 			try {
@@ -603,7 +603,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 			/* treat as not-hidden on inspection failure */
 		}
 		if (!weAreHidden && !this.hiddenAtRelaunchStart) {
-			return; // a legitimate new window while we're visible — leave it alone
+			return; // a legitimate new window while we're visible - leave it alone
 		}
 		this.hiddenAtRelaunchStart = false;
 		if (this.hiddenAtRelaunchStartTimer) {
@@ -618,7 +618,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 		//   - Instead, exclude it from taskbar and restore only the existing window to foreground.
 		// hidePicker deliberately keeps its "ready-to-show"/"show" listeners attached for the
 		// picker's whole lifetime instead of self-removing after the first call. Obsidian's
-		// own picker code shows itself asynchronously, after its starter.html load resolves —
+		// own picker code shows itself asynchronously, after its starter.html load resolves -
 		// if the immediate 0ms fallback below ran first (a near-certainty, since that's a
 		// synchronous same-tick timer racing a page load) and stripped the listeners as a
 		// "one-shot" cleanup, Obsidian's real, later .show() call would sail through
@@ -632,13 +632,13 @@ export default class BackgroundTrayPlugin extends Plugin {
 			//           window can't be visible before its load resolves) but don't
 			//           skip-taskbar a window we haven't identified.
 			//   other → starter.html = the picker (hide it); anything else = a legitimate
-			//           window — permanently spare it.
+			//           window - permanently spare it.
 			let url: string | null = null;
 			try {
 				const u = w.webContents?.getURL();
 				if (typeof u === "string") url = u;
 			} catch {
-				/* URL unreadable — fall back to hidden-state gate alone */
+				/* URL unreadable - fall back to hidden-state gate alone */
 			}
 			if (url !== null && url !== "") {
 				if (!url.toLowerCase().includes("starter")) return;
@@ -648,7 +648,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 			} catch {
 				/* ignore hide failure */
 			}
-			if (url === "") return; // identity still unknown — don't skip-taskbar yet
+			if (url === "") return; // identity still unknown - don't skip-taskbar yet
 			try {
 				if (!w.isDestroyed()) w.setSkipTaskbar(true);
 			} catch {
@@ -727,7 +727,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 			const icon = await this.resolveTrayIcon(remote);
 
 			// Stale-call guard: destroyTray/refreshTray/onunload ran (or the setting
-			// was turned off) during the await above — creating now would leak a tray.
+			// was turned off) during the await above - creating now would leak a tray.
 			if (
 				epoch !== this.trayEpoch ||
 				!this.remote ||
@@ -754,7 +754,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 		} catch (e) {
 			console.error("Still Running: failed to create tray", e);
 			new Notice("Still Running: Failed to create tray icon.");
-			// setToolTip/setContextMenu may have thrown after the Tray was created —
+			// setToolTip/setContextMenu may have thrown after the Tray was created -
 			// destroy the partially created tray instead of just dropping the reference.
 			this.destroyTray();
 		}
@@ -811,14 +811,14 @@ export default class BackgroundTrayPlugin extends Plugin {
 	// ── External toggle (local socket, optional) ─────────────────────────────────────
 	// Allow Show/Hide to be triggered from outside the OS (e.g., global hotkeys like KDE)
 	// by opening a local socket (Unix domain socket / Windows named pipe) at a vault-specific fixed path.
-	// On connection, only call toggleWindow() — message parsing not needed.
+	// On connection, only call toggleWindow() - message parsing not needed.
 	getSocketPath(): string {
-		// In degraded mode (no Electron/Node access — see onload()), `process` itself may be
+		// In degraded mode (no Electron/Node access - see onload()), `process` itself may be
 		// unavailable; the settings tab still renders and calls this unconditionally.
 		if (typeof process === "undefined") return "";
 		const rawVault = this.app.vault.getName();
 		// Sanitizing collapses distinct vault names (e.g. "My Vault" and "My!Vault") to the
-		// same string — append a short hash of the raw name so they still get distinct paths.
+		// same string - append a short hash of the raw name so they still get distinct paths.
 		const vault =
 			rawVault.replace(/[^a-zA-Z0-9_-]/g, "_") + "-" + fnv1aHex(rawVault);
 		if (process.platform === "win32") {
@@ -854,7 +854,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 			const server = net.createServer((socket) => {
 				let data = "";
 				// A client that connects but never sends "end" (buggy/crashed script) would
-				// otherwise hold the connection open indefinitely — force-close it.
+				// otherwise hold the connection open indefinitely - force-close it.
 				const idleTimeout = setTimeout(() => {
 					try {
 						socket.destroy();
@@ -863,7 +863,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 					}
 				}, 5000);
 				socket.on("error", (err) => {
-					// e.g. client aborted mid-write (ECONNRESET) — must not throw uncaught in the renderer.
+					// e.g. client aborted mid-write (ECONNRESET) - must not throw uncaught in the renderer.
 					clearTimeout(idleTimeout);
 					console.error("Still Running: external toggle connection error", err);
 				});
@@ -910,7 +910,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 			});
 			server.listen(socketPath);
 			// XDG_RUNTIME_DIR is already per-user (0700), but the os.tmpdir() fallback
-			// (e.g. no systemd, SSH sessions) is world-readable — restrict to the owner so
+			// (e.g. no systemd, SSH sessions) is world-readable - restrict to the owner so
 			// another local user on a shared machine can't toggle the window / create notes.
 			if (process.platform !== "win32") {
 				try {
@@ -1032,7 +1032,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 					file = await this.app.vault.create(path, content);
 					break;
 				} catch {
-					continue; // lost the race to another concurrent create — try the next suffix
+					continue; // lost the race to another concurrent create - try the next suffix
 				}
 			}
 			if (!file) throw new Error("could not find an available filename");
@@ -1053,12 +1053,12 @@ export default class BackgroundTrayPlugin extends Plugin {
 		try {
 			const app = this.remote?.app;
 			if (app) {
-				// app.quit() (not win.close()) — closing only our own window isn't enough
+				// app.quit() (not win.close()) - closing only our own window isn't enough
 				// to actually exit. interceptPossiblePickerWindow() deliberately leaves a
 				// suppressed relaunch vault-picker window alive-but-hidden (closing it risks
 				// the window-all-closed regression, see that method's comment), so if one is
 				// currently sitting hidden, win.close() alone leaves it as the last open
-				// window and the process never reaches window-all-closed — a zombie process
+				// window and the process never reaches window-all-closed - a zombie process
 				// with no visible window (observed regression, required a manual kill).
 				// app.quit() tears down every window, including that one.
 				app.quit();
@@ -1071,7 +1071,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 				if (this.win) this.win.close();
 				else this.remote?.app?.quit();
 			} catch {
-				// Neither path could quit — reset so future closes still hide to tray
+				// Neither path could quit - reset so future closes still hide to tray
 				// instead of leaving reallyQuitting stuck true forever.
 				this.reallyQuitting = false;
 			}
@@ -1090,7 +1090,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 			app.quit();
 		} catch (e) {
 			console.error("Still Running: relaunch failed", e);
-			// Relaunch did not happen — reset so the next window close still
+			// Relaunch did not happen - reset so the next window close still
 			// hides to tray instead of quitting the app.
 			this.reallyQuitting = false;
 		}
@@ -1244,7 +1244,7 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 				createFragment((frag) => {
 					if (this.plugin.settings.enableExternalToggle && socketPath) {
 						frag.appendText(
-							'Enabled — connect to the socket below to toggle Show/Hide, or send "note" to create a new note (for OS-level global hotkey integration). Click the copy icon to copy any line.'
+							'Enabled - connect to the socket below to toggle Show/Hide, or send "note" to create a new note (for OS-level global hotkey integration). Click the copy icon to copy any line.'
 						);
 						appendCopyableCommand(frag, "Socket path:", socketPath);
 						const cmds = getExternalToggleCommands(socketPath);

@@ -18,6 +18,6 @@ Thumbs.db
 *.tgz
 data.json
 
-# Docs — keep only README.md tracked
+# Docs - keep only README.md tracked
 *.md
 !README.md

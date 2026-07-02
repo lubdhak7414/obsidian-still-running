@@ -1,4 +1,4 @@
-/* Background Tray — No runtime UI. All tray/window behavior is Electron-side.
+/* Background Tray - No runtime UI. All tray/window behavior is Electron-side.
    Settings tab uses Obsidian's default styles except for the external-toggle
    command rows below, which need layout Setting.setDesc() alone can't give. */
 
