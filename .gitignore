@@ -1,7 +1,7 @@
 # Dependencies
 node_modules/
 
-# Build output (release 시 GitHub Release 에 개별 첨부)
+# Build output (attached individually to GitHub Releases)
 main.js
 *.js.map
 
@@ -17,3 +17,7 @@ Thumbs.db
 # Misc
 *.tgz
 data.json
+
+# Docs — keep only README.md tracked
+*.md
+!README.md
