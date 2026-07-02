@@ -590,7 +590,9 @@ export default class BackgroundTrayPlugin extends Plugin {
 					console.error("Still Running: external toggle connection error", err);
 				});
 				socket.on("data", (chunk) => {
-					data += chunk.toString();
+					// Commands are a few bytes ("note"); cap buffering so a client that
+					// holds the connection open streaming data can't grow memory unbounded.
+					if (data.length < 256) data += chunk.toString();
 				});
 				socket.on("end", () => {
 					try {
