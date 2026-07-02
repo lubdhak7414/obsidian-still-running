@@ -11,10 +11,25 @@ class Plugin {
   async saveData(d){ this._data=d; }
 }
 class PluginSettingTab { constructor(app,plugin){ this.app=app; this.plugin=plugin; this.containerEl={empty(){},}; } }
-class Setting { constructor(){} setName(){return this;} setDesc(){return this;} addToggle(cb){cb({setValue(){return this;},onChange(){return this;}});return this;} addText(cb){cb({setPlaceholder(){return this;},setValue(){return this;},onChange(){return this;}});return this;} }
+let lastSettings=[];
+class Setting { constructor(containerEl){ this.containerEl=containerEl; lastSettings.push(this); } setName(n){this.name=n;return this;} setDesc(d){this.desc=d;return this;} addToggle(cb){cb({setValue(){return this;},onChange(){return this;}});return this;} addText(cb){cb({setPlaceholder(){return this;},setValue(){return this;},onChange(){return this;}});return this;} }
 let notices=[]; class Notice { constructor(m){ notices.push(m); } }
 const moment = () => ({ format(){ return "2026-01-01 000000"; } });
 class TFile { constructor(path){ this.path=path; } }
+// Minimal fake DocumentFragment supporting the subset of the real Obsidian API main.ts
+// uses (appendText/createEl), so setDesc() fragments built for the settings page can be
+// inspected by tests instead of silently degrading to opaque strings.
+function createFragment(cb){
+  const frag = { children: [] };
+  frag.appendText = (t) => { frag.children.push({ type:"text", text:t }); };
+  frag.createEl = (tag, o) => {
+    const el = { tag, text:(o&&o.text)||"", href:o&&o.href };
+    frag.children.push({ type:"el", tag, text:el.text, href:el.href });
+    return el;
+  };
+  if (cb) cb(frag);
+  return frag;
+}
 const obsidianStub = { Plugin, PluginSettingTab, Setting, Notice, App: class {}, moment, TFile };
 
 // ── @electron/remote stub ──
@@ -58,6 +73,9 @@ global.window = {
   removeEventListener(ev, fn){ _winListeners[ev]=(_winListeners[ev]||[]).filter(f=>f!==fn); },
   setTimeout: (fn, t) => setTimeout(fn, t),
 };
+// Obsidian's own renderer bootstrap defines createFragment as a real global (not a module
+// export) — main.ts relies on that, so the stub environment must provide it the same way.
+global.createFragment = createFragment;
 
 const PluginClass = require("./main.js").default || require("./main.js");
 // ── fake vault/workspace (in-memory) for quick-note test ──
@@ -278,6 +296,21 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   await p5.onload();
   ok(fakeWin._visible===false, "startMinimized: window hidden on load");
   p5.onunload();
+
+  // ── Settings page: external-toggle help must be a real hyperlink with a real line break ──
+  const pSettings = new PluginClass(app, { id:"obsidian-still-running" });
+  await pSettings.onload();
+  lastSettings.length = 0;
+  pSettings._tabs[0].display();
+  const extToggleSetting = lastSettings.find(s => s.name === "Enable external toggle (advanced)");
+  ok(!!extToggleSetting, "settings: external toggle setting is rendered");
+  const helpFrag = extToggleSetting && extToggleSetting.desc;
+  const helpLink = helpFrag && helpFrag.children.find(c => c.type==="el" && c.tag==="a");
+  ok(!!helpLink, "settings: keyboard shortcut help renders as a real <a> hyperlink, not plain text");
+  ok(helpLink && helpLink.href === "https://github.com/lubdhak7414/obsidian-still-running#show--hide-or-create-a-note-with-a-global-keyboard-shortcut", "settings: help link points at the correct (non-broken) README anchor");
+  const helpBrCount = helpFrag ? helpFrag.children.filter(c=>c.type==="el"&&c.tag==="br").length : 0;
+  ok(helpBrCount>=1, "settings: description uses real <br> line breaks, not a literal \\n (which doesn't render in HTML)");
+  pSettings.onunload();
 
   console.log(fail===0 ? "\nALL PASS" : `\n${fail} FAIL`);
   process.exit(fail===0?0:1);

@@ -1016,10 +1016,33 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Enable external toggle (advanced)")
 			.setDesc(
-				(this.plugin.settings.enableExternalToggle && socketPath
-					? `Enabled — Connect to the path below to toggle Show/Hide, or send "note" to create a new note (for OS-level global hotkey integration):\n${socketPath}\nExample (Linux/macOS): echo x | socat - UNIX-CONNECT:${socketPath}\nExample (new note): echo note | socat - UNIX-CONNECT:${socketPath}`
-					: "Expose Show/Hide toggle (and new-note creation) via a local socket (Unix domain socket / Windows named pipe) to allow triggering from outside (e.g., OS global hotkeys).") +
-					"\nKeyboard shortcut setup help: https://github.com/lubdhak7414/obsidian-still-running#show--hide-with-a-global-keyboard-shortcut"
+				createFragment((frag) => {
+					if (this.plugin.settings.enableExternalToggle && socketPath) {
+						frag.appendText(
+							'Enabled — Connect to the path below to toggle Show/Hide, or send "note" to create a new note (for OS-level global hotkey integration):'
+						);
+						frag.createEl("br");
+						frag.appendText(socketPath);
+						frag.createEl("br");
+						frag.appendText(
+							`Example (Linux/macOS): echo x | socat - UNIX-CONNECT:${socketPath}`
+						);
+						frag.createEl("br");
+						frag.appendText(
+							`Example (new note): echo note | socat - UNIX-CONNECT:${socketPath}`
+						);
+					} else {
+						frag.appendText(
+							"Expose Show/Hide toggle (and new-note creation) via a local socket (Unix domain socket / Windows named pipe) to allow triggering from outside (e.g., OS global hotkeys)."
+						);
+					}
+					frag.createEl("br");
+					frag.appendText("Keyboard shortcut setup help: ");
+					frag.createEl("a", {
+						text: "README",
+						href: "https://github.com/lubdhak7414/obsidian-still-running#show--hide-or-create-a-note-with-a-global-keyboard-shortcut",
+					});
+				})
 			)
 			.addToggle((t) =>
 				t
