@@ -105,7 +105,8 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   // Vault selection dialog created shortly after by Obsidian (new window, id=2) — supports show/ready-to-show events.
   const picker={ id:2, _visible:true, hidden:0, closed:0, skipTaskbar:false, _ev:{},
     on(ev,fn){ (this._ev[ev]=this._ev[ev]||[]).push(fn); },
-    fire(ev){ (this._ev[ev]||[]).forEach(f=>f()); },
+    removeListener(ev,fn){ this._ev[ev]=(this._ev[ev]||[]).filter(f=>f!==fn); },
+    fire(ev){ (this._ev[ev]||[]).slice().forEach(f=>f()); },
     hide(){ this._visible=false; this.hidden++; }, close(){ this.closed++; },
     setSkipTaskbar(v){ this.skipTaskbar=v; },
     isDestroyed(){ return this.closed>0; }, isVisible(){ return this._visible; } };
@@ -116,6 +117,9 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   await new Promise(r=>setTimeout(r,220));
   ok(picker.closed===0, "vault selection dialog: not closed (prevents window-all-closed exit flow)");
   ok(picker.skipTaskbar===true, "vault selection dialog: excluded from taskbar");
+  const hiddenAfterSettle = picker.hidden;
+  picker.fire("show"); // spurious extra "show" event after everything has settled
+  ok(picker.hidden===hiddenAfterSettle, "vault selection dialog: hidePicker listener removed after first fire (no leak)");
   ok(log.quit===quitBefore, "★exit regression prevention: existing Obsidian not quit/closed (quit not called)");
   // A second, later window in the same relaunch span (e.g. a legitimate popout pane the
   // user opens right after relaunching) must NOT be caught by the picker-hiding logic —

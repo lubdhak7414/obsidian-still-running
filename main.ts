@@ -44,6 +44,7 @@ interface ElectronWindow {
 	on(event: "close", listener: (e: ElectronEvent) => void): void;
 	on(event: "ready-to-show" | "show", listener: () => void): void;
 	removeListener(event: "close", listener: ElectronListener): void;
+	removeListener(event: "ready-to-show" | "show", listener: () => void): void;
 }
 
 interface ElectronTray {
@@ -425,6 +426,18 @@ export default class BackgroundTrayPlugin extends Plugin {
 						if (!w.isDestroyed()) w.setSkipTaskbar(true);
 					} catch {
 						/* unsupported on some platforms/windows */
+					}
+					// One-shot: don't keep listeners (and their closure over w/this) attached
+					// to the picker window indefinitely — it only ever needs to fire once.
+					try {
+						w.removeListener("ready-to-show", hidePicker);
+					} catch {
+						/* already removed */
+					}
+					try {
+						w.removeListener("show", hidePicker);
+					} catch {
+						/* already removed */
 					}
 				};
 				try {
