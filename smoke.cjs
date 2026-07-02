@@ -297,6 +297,19 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   ok(fakeWin._visible===false, "startMinimized: window hidden on load");
   p5.onunload();
 
+  // ── New note brings the window to front regardless of its current state ──
+  const pNoteFront = new PluginClass(app, { id:"obsidian-still-running" });
+  await pNoteFront.onload();
+  fakeWin._visible = true; fakeWin._min = false;
+  const shownBefore4 = log.shown, focusedBefore4 = log.focused;
+  await pNoteFront.createQuickNote();
+  ok(log.shown>shownBefore4 && log.focused>focusedBefore4, "createQuickNote: brings an already-visible window to front too, not just hidden ones");
+  fakeWin.hide();
+  const shownBefore5 = log.shown, focusedBefore5 = log.focused;
+  await pNoteFront.createQuickNote();
+  ok(log.shown>shownBefore5 && log.focused>focusedBefore5 && fakeWin._visible===true, "createQuickNote: also shows/focuses when the window was hidden");
+  pNoteFront.onunload();
+
   // ── Settings page: external-toggle help must be a real hyperlink with a real line break ──
   const pSettings = new PluginClass(app, { id:"obsidian-still-running" });
   await pSettings.onload();
