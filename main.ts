@@ -737,7 +737,10 @@ export default class BackgroundTrayPlugin extends Plugin {
 		this.reallyQuitting = true;
 		try {
 			app.relaunch();
-			app.exit(0);
+			// app.quit() (not exit()) so Obsidian gets its normal graceful-shutdown path
+			// (autosave/will-quit flush). Our own close/beforeunload interception no-ops
+			// while reallyQuitting is true, so it won't veto this.
+			app.quit();
 		} catch (e) {
 			console.error("Still Running: relaunch failed", e);
 			// Relaunch did not happen — reset so the next window close still
