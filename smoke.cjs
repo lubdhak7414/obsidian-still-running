@@ -157,6 +157,19 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   ok(prevented2===false, "reallyQuitting bypasses close interception");
   p2.onunload();
 
+  // quitCompletely: if BOTH close paths fail, reallyQuitting must reset (else hide-to-tray breaks forever)
+  const p7 = new PluginClass(app, { id:"obsidian-still-running" });
+  await p7.onload();
+  const origClose = fakeWin.close, origQuit = remoteStub.app.quit;
+  fakeWin.close = () => { throw new Error("boom"); };
+  remoteStub.app.quit = () => { throw new Error("boom"); };
+  p7.quitCompletely();
+  fakeWin.close = origClose; remoteStub.app.quit = origQuit;
+  let prevented3=false;
+  (log.listeners["close"]||[]).forEach(fn=>fn({preventDefault(){prevented3=true;}}));
+  ok(prevented3===true, "quitCompletely: reallyQuitting resets after total quit failure");
+  p7.onunload();
+
   // ── External toggle (local socket) ── Uses real Node net/fs (no Electron needed, pure IPC validation).
   const net = require("net");
   const fsReal = require("fs");

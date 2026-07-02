@@ -809,7 +809,9 @@ export default class BackgroundTrayPlugin extends Plugin {
 			try {
 				this.remote?.app?.quit();
 			} catch {
-				/* ignore quit failure */
+				// Neither path could quit — reset so future closes still hide to tray
+				// instead of leaving reallyQuitting stuck true forever.
+				this.reallyQuitting = false;
 			}
 		}
 	}
