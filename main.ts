@@ -1,16 +1,15 @@
 import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 
 /*
- * Background Tray — MVP (로드맵 1단계: Run in background + 트레이 아이콘)
- * 전역 단축키·빠른 노트·자동 실행 등은 후속 단계. 01. Spec / 00. OVERVIEW 참조.
+ * Still Running — keep Obsidian running in the system tray instead of quitting.
  */
 
-// 마지막 수단 fallback 아이콘 (16x16 PNG). 평소엔 app.getFileIcon 으로 실제 Obsidian 아이콘 사용.
+// Last-resort fallback icon (16x16 PNG). Normally use app.getFileIcon to get the actual Obsidian icon.
 const DEFAULT_TRAY_ICON =
 	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR42mOosXr7nxLMMGrAqAGjBgwXAwBGOKIfCm+pOwAAAABJRU5ErkJggg==";
 
-// ── Electron(렌더러에서 접근하는 main 프로세스 API) 최소 타입 ──────────
-// any 대신 실제로 사용하는 멤버만 좁게 선언해 unsafe-access 계열 경고를 없앤다.
+// ── Electron (main process API accessed from renderer) minimal types ──────────
+// Declare only used members narrowly, not any, to avoid unsafe-access warnings.
 interface ElectronEvent {
 	preventDefault(): void;
 	returnValue?: boolean;
@@ -79,12 +78,41 @@ interface ElectronRemote {
 	};
 }
 
+// ── Node built-in modules (local socket for external toggle) minimal types ──────────────────
+interface NetSocket {
+	end(): void;
+}
+
+interface NetServer {
+	listen(path: string): void;
+	close(): void;
+	on(event: "error", listener: (err: Error) => void): void;
+}
+
+interface NetModule {
+	createServer(handler: (socket: NetSocket) => void): NetServer;
+}
+
+interface FsModule {
+	existsSync(path: string): boolean;
+	unlinkSync(path: string): void;
+}
+
+interface OsModule {
+	tmpdir(): string;
+}
+
+interface PathModule {
+	join(...parts: string[]): string;
+}
+
 interface BackgroundTraySettings {
 	runInBackground: boolean;
 	createTrayIcon: boolean;
 	focusOnRelaunch: boolean;
 	trayIconPath: string;
 	trayTooltip: string;
+	enableExternalToggle: boolean;
 }
 
 const DEFAULT_SETTINGS: BackgroundTraySettings = {
@@ -92,31 +120,32 @@ const DEFAULT_SETTINGS: BackgroundTraySettings = {
 	createTrayIcon: true,
 	focusOnRelaunch: true,
 	trayIconPath: "",
-	trayTooltip: "{{vault}} - Background Tray",
+	trayTooltip: "{{vault}} - Still Running",
+	enableExternalToggle: false,
 };
 
-// 렌더러에서 Electron main 프로세스 모듈을 가져온다. 빌드별 경로 차이 → fallback.
-// require() 리터럴 대신 window.require 를 통해 가져와 정적 import 규칙을 피한다.
-function getRemote(): ElectronRemote | null {
+// Load Node/Electron main process modules from the renderer.
+// Use window.require instead of require() literals to avoid static import rules.
+function windowRequire(id: string): unknown {
 	if (typeof window === "undefined") return null;
-	const electronRequire = (
-		window as unknown as { require?: (id: string) => unknown }
-	).require;
-	if (typeof electronRequire !== "function") return null;
+	const req = (window as unknown as { require?: (id: string) => unknown })
+		.require;
+	if (typeof req !== "function") return null;
 	try {
-		return electronRequire("@electron/remote") as ElectronRemote;
+		return req(id);
 	} catch {
-		/* @electron/remote 미가용 → legacy 시도 */
+		return null;
 	}
-	try {
-		const legacy = electronRequire("electron") as {
-			remote?: ElectronRemote;
-		};
-		return legacy.remote ?? null;
-	} catch {
-		/* Electron 접근 불가 */
-	}
-	return null;
+}
+
+function getRemote(): ElectronRemote | null {
+	const remote = windowRequire("@electron/remote") as ElectronRemote | null;
+	if (remote) return remote;
+	// legacy: electron.remote (older Electron versions fallback)
+	const legacy = windowRequire("electron") as {
+		remote?: ElectronRemote;
+	} | null;
+	return legacy?.remote ?? null;
 }
 
 export default class BackgroundTrayPlugin extends Plugin {
@@ -133,6 +162,9 @@ export default class BackgroundTrayPlugin extends Plugin {
 		| null = null;
 	private lastRelaunchAt = 0;
 	private reallyQuitting = false;
+	private trayEpoch = 0;
+	private ipcServer: NetServer | null = null;
+	private socketPath: string | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -140,9 +172,9 @@ export default class BackgroundTrayPlugin extends Plugin {
 		this.remote = getRemote();
 		if (!this.remote) {
 			new Notice(
-				"Background Tray: Electron 접근 불가 — 이 빌드에서는 트레이 기능을 사용할 수 없습니다."
+				"Still Running: Cannot access Electron — tray features are unavailable in this build."
 			);
-			// 앱은 절대 크래시 금지. 설정 탭만 노출하고 기능은 비활성.
+			// App must never crash. Show only settings tab and disable features.
 			this.addSettingTab(new BackgroundTraySettingTab(this.app, this));
 			return;
 		}
@@ -150,61 +182,63 @@ export default class BackgroundTrayPlugin extends Plugin {
 		try {
 			this.win = this.remote.getCurrentWindow();
 		} catch (e) {
-			console.error("Background Tray: getCurrentWindow 실패", e);
+			console.error("Still Running: getCurrentWindow failed", e);
 			this.win = null;
 		}
 
-		// ★ 닫기 가로채기는 두 층으로 건다:
-		//   (1) beforeunload (렌더러 자체 이벤트) — Electron 39에서 신뢰성 있게 veto 되는 1차 방어.
-		//   (2) window.on("close") (remote) — 일부 환경 fallback. Electron 39 @electron/remote 에서는
-		//       preventDefault 가 무시되는 것을 실측 확인(01. Spec §3.1·§3.3) → beforeunload 가 실질 동작.
+		// ★ Close interception uses two layers:
+		//   (1) beforeunload (renderer-only event) — primary defense, reliably vetoed in Electron 39.
+		//   (2) window.on("close") (remote) — fallback for some environments. In Electron 39 @electron/remote,
+		//       preventDefault is observed to be ignored (see 01. Spec §3.1·§3.3) → beforeunload is the actual mechanism.
 		this.registerBeforeUnload();
 		this.registerCloseInterception();
-		// 트레이에 숨은 상태에서 재실행 시 기존 창 복원(+ 보관함 선택창 억제).
+		// Restore existing window on relaunch when hidden in tray (+ suppress vault selection dialog).
 		this.registerSingleInstance();
 
 		if (this.settings.createTrayIcon) await this.createTray();
+		if (this.settings.enableExternalToggle) await this.createIpcServer();
 
-		// 단일 목적 유지: 커맨드 팔레트/단축키는 등록하지 않는다.
-		// (모든 동작은 트레이 아이콘과 우클릭 메뉴로 제공 — Show/Hide·Relaunch·Quit.)
+		// Maintain single purpose: do not register command palette / hotkey shortcuts.
+		// (All actions are provided via tray icon and right-click menu — Show/Hide, Relaunch, Quit.)
 		this.addSettingTab(new BackgroundTraySettingTab(this.app, this));
 	}
 
 	onunload() {
-		// 01. Spec §3.4 정리 체크리스트 — 끄면 동작 100% 원복.
+		// 01. Spec §3.4 cleanup checklist — when disabled, behavior 100% reverts.
 		this.removeBeforeUnload();
 		this.removeCloseInterception();
 		this.removeSingleInstance();
 		this.destroyTray();
+		this.destroyIpcServer();
 		try {
 			this.win?.setSkipTaskbar(false);
 		} catch {
-			/* 창 접근 불가 */
+			/* window access unavailable */
 		}
 		try {
-			// (mac) dock 복원
+			// (mac) restore dock
 			this.remote?.app?.dock?.show?.();
 		} catch {
-			/* dock 없음 */
+			/* dock not available */
 		}
 		this.win = null;
 		this.remote = null;
 	}
 
-	// ── 닫기 가로채기 ① beforeunload (1차·실질 동작) ───────────────────
-	// 렌더러 자체 이벤트라 remote 왕복 없이 동기적으로 닫기를 취소할 수 있다.
+	// ── Close interception ① beforeunload (primary, actual mechanism) ───────────────────
+	// Renderer-only event; can synchronously cancel close without remote round-trip.
 	private registerBeforeUnload() {
 		if (typeof window === "undefined") return;
-		this.removeBeforeUnload(); // 중복 등록 가드
+		this.removeBeforeUnload(); // duplicate registration guard
 		this.beforeUnloadHandler = (e: BeforeUnloadEvent) => {
 			if (this.settings.runInBackground && !this.reallyQuitting) {
 				e.preventDefault();
-				// Electron: 닫기 취소 (returnValue 는 deprecated 타입 → 캐스트로 우회)
+				// Electron: cancel close (returnValue is deprecated type — workaround via cast)
 				(e as { returnValue: boolean }).returnValue = false;
 				try {
-					this.win?.hide(); // 트레이로 숨김
+					this.win?.hide(); // hide to tray
 				} catch {
-					/* 숨김 실패 무시 */
+					/* ignore hide failure */
 				}
 			}
 		};
@@ -221,21 +255,25 @@ export default class BackgroundTrayPlugin extends Plugin {
 		this.beforeUnloadHandler = null;
 	}
 
-	// ── 닫기 가로채기 ② window.on("close") (fallback) ─────────────────
+	// ── Close interception ② window.on("close") (fallback) ─────────────────
 	private registerCloseInterception() {
 		const win = this.win;
 		if (!win) return;
-		this.removeCloseInterception(); // 중복 등록 가드
+		this.removeCloseInterception(); // duplicate registration guard
 		this.closeHandler = (e: ElectronEvent) => {
 			if (this.settings.runInBackground && !this.reallyQuitting) {
 				e.preventDefault();
-				win.hide();
+				try {
+					win.hide();
+				} catch {
+					/* ignore hide failure */
+				}
 			}
 		};
 		try {
 			win.on("close", this.closeHandler);
 		} catch (e) {
-			console.error("Background Tray: close 리스너 등록 실패", e);
+			console.error("Still Running: failed to register close listener", e);
 			this.closeHandler = null;
 		}
 	}
@@ -245,29 +283,29 @@ export default class BackgroundTrayPlugin extends Plugin {
 			try {
 				this.win.removeListener("close", this.closeHandler);
 			} catch {
-				/* 이미 제거됨 */
+				/* already removed */
 			}
 		}
 		this.closeHandler = null;
 	}
 
-	// ── 단일 인스턴스 포커싱 ───────────────────────────────────────────
-	// 트레이에 숨은 상태에서 Obsidian을 다시 실행하면, Obsidian은 second-instance 에서
-	// 보관함 선택창을 새로 띄운다(실측). → 우리는 기존 창을 복원하고, 직후 생성되는 그
-	// 선택창을 닫아 "기존 창 복귀"처럼 동작하게 한다. (Spec §4.6)
+	// ── Single-instance window focus ───────────────────────────────────────────
+	// When Obsidian is relaunched while hidden in the tray, Obsidian shows a vault selection
+	// dialog in second-instance (observed). → We restore the existing window, then close the
+	// newly created dialog to appear as "return to existing window". (Spec §4.6)
 	private registerSingleInstance() {
 		const remote = this.remote;
 		const win = this.win;
 		if (!remote || !win) return;
 		const app = remote.app;
 		if (typeof app.prependListener !== "function") return;
-		this.removeSingleInstance(); // 중복 등록 가드
+		this.removeSingleInstance(); // duplicate registration guard
 
 		let myId = -1;
 		try {
 			myId = win.id;
 		} catch {
-			/* id 접근 불가 */
+			/* id access unavailable */
 		}
 
 		this.secondInstanceHandler = () => {
@@ -284,40 +322,40 @@ export default class BackgroundTrayPlugin extends Plugin {
 			try {
 				id = w.id;
 			} catch {
-				/* id 접근 불가 */
+				/* id access unavailable */
 			}
-			if (id === myId) return; // 우리 창은 절대 건드리지 않음
-			// second-instance 직후(짧은 창)에 생긴 새 창 = 보관함 선택창.
+			if (id === myId) return; // never touch our window
+			// New window created shortly after second-instance = vault selection dialog.
 			if (
 				this.lastRelaunchAt > 0 &&
 				Date.now() - this.lastRelaunchAt < 4000
 			) {
-				// ★ 깜빡임/종료 회귀 방지:
-				//   - 선택창이 "보이려 할 때마다"(ready-to-show/show) 즉시 숨겨 화면 깜빡임을 막는다.
-				//   - 새 선택창은 닫지 않는다. Obsidian 1.12/Electron 39에서는 hidden main window가
-				//     있어도 picker close 가 window-all-closed 종료 흐름을 밟을 수 있다.
-				//   - 대신 작업표시줄에서도 제외하고 기존 창만 전면으로 복원한다.
+				// ★ Prevent flicker/exit regression:
+				//   - Hide the dialog immediately when it tries to show (ready-to-show/show) to avoid screen flicker.
+				//   - Don't close the new dialog. In Obsidian 1.12/Electron 39, even with a hidden main window,
+				//     closing the picker can enter the window-all-closed exit flow.
+				//   - Instead, exclude it from taskbar and restore only the existing window to foreground.
 				const hidePicker = () => {
 					try {
 						if (!w.isDestroyed()) w.hide();
 					} catch {
-						/* 숨김 실패 무시 */
+						/* ignore hide failure */
 					}
 					try {
 						if (!w.isDestroyed()) w.setSkipTaskbar(true);
 					} catch {
-						/* 일부 플랫폼/창에서는 미지원 */
+						/* unsupported on some platforms/windows */
 					}
 				};
 				try {
 					w.on("ready-to-show", hidePicker);
 				} catch {
-					/* 이벤트 미지원 */
+					/* event not supported */
 				}
 				try {
 					w.on("show", hidePicker);
 				} catch {
-					/* 이벤트 미지원 */
+					/* event not supported */
 				}
 				window.setTimeout(hidePicker, 0);
 				window.setTimeout(() => {
@@ -327,17 +365,17 @@ export default class BackgroundTrayPlugin extends Plugin {
 						hidePicker();
 						this.showWindow();
 					} catch {
-						/* 창 복원 실패 무시 */
+						/* ignore window restore failure */
 					}
 				}, 150);
 			}
 		};
 		try {
-			// 기존 창을 먼저 복원하도록 prepend.
+			// Prepend to restore existing window first.
 			app.prependListener("second-instance", this.secondInstanceHandler);
 			app.on("browser-window-created", this.windowCreatedHandler);
 		} catch (e) {
-			console.error("Background Tray: single-instance 등록 실패", e);
+			console.error("Still Running: failed to register single-instance", e);
 		}
 	}
 
@@ -351,7 +389,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 						this.secondInstanceHandler
 					);
 			} catch {
-				/* 이미 제거됨 */
+				/* already removed */
 			}
 			try {
 				if (this.windowCreatedHandler)
@@ -360,21 +398,31 @@ export default class BackgroundTrayPlugin extends Plugin {
 						this.windowCreatedHandler
 					);
 			} catch {
-				/* 이미 제거됨 */
+				/* already removed */
 			}
 		}
 		this.secondInstanceHandler = null;
 		this.windowCreatedHandler = null;
 	}
 
-	// ── 트레이 ───────────────────────────────────────────────────────
+	// ── Tray ───────────────────────────────────────────────────────
 	private async createTray() {
 		const remote = this.remote;
 		if (!remote) return;
-		this.destroyTray(); // 중복 가드
+		this.destroyTray(); // duplicate guard
+		const epoch = this.trayEpoch;
 		try {
 			const { Tray, Menu } = remote;
 			const icon = await this.resolveTrayIcon(remote);
+
+			// Stale-call guard: destroyTray/refreshTray/onunload ran (or the setting
+			// was turned off) during the await above — creating now would leak a tray.
+			if (
+				epoch !== this.trayEpoch ||
+				!this.remote ||
+				!this.settings.createTrayIcon
+			)
+				return;
 
 			const tray = new Tray(icon);
 			this.tray = tray;
@@ -392,18 +440,20 @@ export default class BackgroundTrayPlugin extends Plugin {
 			tray.setContextMenu(menu);
 			tray.on("click", () => this.toggleWindow());
 		} catch (e) {
-			console.error("Background Tray: 트레이 생성 실패", e);
-			new Notice("Background Tray: 트레이 아이콘 생성에 실패했습니다.");
-			this.tray = null;
+			console.error("Still Running: failed to create tray", e);
+			new Notice("Still Running: Failed to create tray icon.");
+			// setToolTip/setContextMenu may have thrown after the Tray was created —
+			// destroy the partially created tray instead of just dropping the reference.
+			this.destroyTray();
 		}
 	}
 
-	// 트레이 아이콘 결정: 커스텀 경로 → 실제 Obsidian 앱 아이콘 → fallback.
+	// Resolve tray icon: custom path → actual Obsidian app icon → fallback.
 	private async resolveTrayIcon(
 		remote: ElectronRemote
 	): Promise<NativeImageLike> {
 		const { nativeImage, app } = remote;
-		// 1) 사용자 지정 경로
+		// 1) User-specified path
 		if (this.settings.trayIconPath) {
 			try {
 				const c = nativeImage.createFromPath(
@@ -411,28 +461,29 @@ export default class BackgroundTrayPlugin extends Plugin {
 				);
 				if (!c.isEmpty()) return c;
 			} catch {
-				/* 경로 무효 → 다음 후보 */
+				/* invalid path → try next candidate */
 			}
 		}
-		// 2) 실제 Obsidian 실행 파일의 아이콘을 런타임에 추출 (번들 불필요)
+		// 2) Extract icon from actual Obsidian executable at runtime (no bundling needed)
 		try {
 			const img = await app.getFileIcon(process.execPath, {
 				size: "normal",
 			});
 			if (!img.isEmpty()) return img;
 		} catch {
-			/* 아이콘 추출 실패 → fallback */
+			/* icon extraction failed → fallback */
 		}
-		// 3) 마지막 수단 fallback
+		// 3) Last-resort fallback
 		return nativeImage.createFromDataURL(DEFAULT_TRAY_ICON);
 	}
 
 	private destroyTray() {
+		this.trayEpoch++; // invalidate any in-flight createTray()
 		if (this.tray) {
 			try {
 				this.tray.destroy();
 			} catch {
-				/* 이미 파괴됨 */
+				/* already destroyed */
 			}
 		}
 		this.tray = null;
@@ -441,11 +492,111 @@ export default class BackgroundTrayPlugin extends Plugin {
 	private renderTooltip(): string {
 		const vault = this.app.vault.getName();
 		return (
-			this.settings.trayTooltip || "{{vault}} - Background Tray"
+			this.settings.trayTooltip || "{{vault}} - Still Running"
 		).replace(/\{\{vault\}\}/g, vault);
 	}
 
-	// ── 창 동작 ──────────────────────────────────────────────────────
+	// ── External toggle (local socket, optional) ─────────────────────────────────────
+	// Allow Show/Hide to be triggered from outside the OS (e.g., global hotkeys like KDE)
+	// by opening a local socket (Unix domain socket / Windows named pipe) at a vault-specific fixed path.
+	// On connection, only call toggleWindow() — message parsing not needed.
+	getSocketPath(): string {
+		const vault = this.app.vault.getName().replace(/[^a-zA-Z0-9_-]/g, "_");
+		if (process.platform === "win32") {
+			return `\\\\.\\pipe\\obsidian-still-running-${vault}`;
+		}
+		const os = windowRequire("os") as OsModule | null;
+		const path = windowRequire("path") as PathModule | null;
+		if (!os || !path) return "";
+		return path.join(os.tmpdir(), `obsidian-still-running-${vault}.sock`);
+	}
+
+	private async createIpcServer() {
+		if (!this.win) return;
+		this.destroyIpcServer(); // duplicate guard
+		try {
+			const net = windowRequire("net") as NetModule | null;
+			const fs = windowRequire("fs") as FsModule | null;
+			if (!net || !fs) throw new Error("net/fs module access unavailable");
+			const socketPath = this.getSocketPath();
+			if (!socketPath) throw new Error("socket path calculation failed");
+			// Socket file may remain from previous abnormal exit (Windows named pipe is OS-managed, so N/A).
+			if (process.platform !== "win32" && fs.existsSync(socketPath)) {
+				try {
+					fs.unlinkSync(socketPath);
+				} catch {
+					/* cleanup failure → will show up as listen() error */
+				}
+			}
+			const server = net.createServer((socket) => {
+				try {
+					this.toggleWindow();
+				} finally {
+					try {
+						socket.end();
+					} catch {
+						/* ignore */
+					}
+				}
+			});
+			server.on("error", (err) => {
+				console.error("Still Running: external toggle socket error", err);
+				// e.g. EADDRINUSE (another vault/instance owns the path). Tear down so a
+				// stale this.socketPath never unlinks a socket file owned by another
+				// live instance in destroyIpcServer().
+				try {
+					server.close();
+				} catch {
+					/* already closed */
+				}
+				if (this.ipcServer === server) {
+					this.ipcServer = null;
+					this.socketPath = null;
+					new Notice(
+						"Still Running: External toggle socket failed (path in use?)."
+					);
+				}
+			});
+			server.listen(socketPath);
+			this.ipcServer = server;
+			this.socketPath = socketPath;
+		} catch (e) {
+			console.error("Still Running: failed to create external toggle socket", e);
+			new Notice("Still Running: Failed to create external toggle socket.");
+			this.ipcServer = null;
+			this.socketPath = null;
+		}
+	}
+
+	private destroyIpcServer() {
+		if (this.ipcServer) {
+			try {
+				this.ipcServer.close();
+			} catch {
+				/* already closed */
+			}
+		}
+		this.ipcServer = null;
+		if (this.socketPath && process.platform !== "win32") {
+			try {
+				const fs = windowRequire("fs") as FsModule | null;
+				if (fs?.existsSync(this.socketPath)) fs.unlinkSync(this.socketPath);
+			} catch {
+				/* ignore cleanup failure */
+			}
+		}
+		this.socketPath = null;
+	}
+
+	// Re-open socket on settings change for immediate effect
+	async refreshIpcServer() {
+		this.destroyIpcServer();
+		if (this.remote && this.win && this.settings.enableExternalToggle) {
+			await this.createIpcServer();
+		}
+	}
+
+	// ── Window behavior ──────────────────────────────────────────────────────
 	toggleWindow() {
 		const win = this.win;
 		if (!win) return;
@@ -456,7 +607,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 				this.showWindow();
 			}
 		} catch (e) {
-			console.error("Background Tray: toggleWindow 실패", e);
+			console.error("Still Running: toggleWindow failed", e);
 		}
 	}
 
@@ -468,7 +619,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 			win.show();
 			win.focus();
 		} catch {
-			/* 창 복귀 실패 무시 */
+			/* ignore window restore failure */
 		}
 	}
 
@@ -478,22 +629,27 @@ export default class BackgroundTrayPlugin extends Plugin {
 			if (this.win) this.win.close();
 			else this.remote?.app?.quit();
 		} catch (e) {
-			console.error("Background Tray: quit 실패", e);
+			console.error("Still Running: quit failed", e);
 			try {
 				this.remote?.app?.quit();
 			} catch {
-				/* 종료 실패 무시 */
+				/* ignore quit failure */
 			}
 		}
 	}
 
 	relaunch() {
+		const app = this.remote?.app;
+		if (!app) return;
+		this.reallyQuitting = true;
 		try {
-			this.reallyQuitting = true;
-			this.remote?.app?.relaunch();
-			this.remote?.app?.exit(0);
+			app.relaunch();
+			app.exit(0);
 		} catch (e) {
-			console.error("Background Tray: relaunch 실패", e);
+			console.error("Still Running: relaunch failed", e);
+			// Relaunch did not happen — reset so the next window close still
+			// hides to tray instead of quitting the app.
+			this.reallyQuitting = false;
 		}
 	}
 
@@ -508,7 +664,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	// 설정 변경 시 트레이를 다시 만들어 즉시 반영
+	// Recreate tray on settings change for immediate effect
 	async refreshTray() {
 		this.destroyTray();
 		if (this.remote && this.settings.createTrayIcon)
@@ -530,7 +686,7 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Run in background")
-			.setDesc("창을 닫아도 종료하지 않고 트레이로 숨깁니다.")
+			.setDesc("Close window to tray instead of quitting the app.")
 			.addToggle((t) =>
 				t
 					.setValue(this.plugin.settings.runInBackground)
@@ -542,7 +698,7 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Create tray icon")
-			.setDesc("시스템 트레이에 아이콘을 만듭니다. (좌클릭: 표시/숨김 토글)")
+			.setDesc("Create an icon in the system tray. (Left-click: toggle show/hide)")
 			.addToggle((t) =>
 				t
 					.setValue(this.plugin.settings.createTrayIcon)
@@ -556,7 +712,7 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Focus existing window on relaunch")
 			.setDesc(
-				"트레이에 숨은 상태에서 Obsidian을 다시 실행하면 새 보관함 선택창 대신 기존 창을 복원합니다."
+				"When relaunching Obsidian while hidden in tray, restore the existing window instead of showing a new vault selection dialog."
 			)
 			.addToggle((t) =>
 				t
@@ -570,7 +726,7 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Tray icon image")
 			.setDesc(
-				"커스텀 트레이 아이콘의 절대 경로 (비우면 Obsidian 기본 아이콘, 16x16 권장)."
+				"Absolute path to a custom tray icon (leave empty for default Obsidian icon; 16x16 recommended)."
 			)
 			.addText((txt) =>
 				txt
@@ -585,7 +741,7 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Tray tooltip")
-			.setDesc("{{vault}} → 볼트명으로 치환됩니다.")
+			.setDesc("{{vault}} → replaced with the vault name.")
 			.addText((txt) =>
 				txt
 					.setValue(this.plugin.settings.trayTooltip)
@@ -593,6 +749,26 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 						this.plugin.settings.trayTooltip = v;
 						await this.plugin.saveSettings();
 						await this.plugin.refreshTray();
+					})
+			);
+
+		const socketPath = this.plugin.getSocketPath();
+		new Setting(containerEl)
+			.setName("Enable external toggle (advanced)")
+			.setDesc(
+				(this.plugin.settings.enableExternalToggle && socketPath
+					? `Enabled — Connect to the path below to toggle Show/Hide (for OS-level global hotkey integration):\n${socketPath}\nExample (Linux/macOS): echo x | socat - UNIX-CONNECT:${socketPath}`
+					: "Expose Show/Hide toggle via a local socket (Unix domain socket / Windows named pipe) to allow triggering from outside (e.g., OS global hotkeys).") +
+					"\nKeyboard shortcut setup help: https://github.com/lubdhak7414/obsidian-still-running#show--hide-with-a-global-keyboard-shortcut"
+			)
+			.addToggle((t) =>
+				t
+					.setValue(this.plugin.settings.enableExternalToggle)
+					.onChange(async (v) => {
+						this.plugin.settings.enableExternalToggle = v;
+						await this.plugin.saveSettings();
+						await this.plugin.refreshIpcServer();
+						this.display(); // refresh socket path display
 					})
 			);
 	}
