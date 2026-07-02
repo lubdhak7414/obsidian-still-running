@@ -279,6 +279,13 @@ export default class BackgroundTrayPlugin extends Plugin {
 				!this.reallyQuitting &&
 				this.closeEventFired
 			) {
+				// Consume the flag now — a reload's beforeunload arriving shortly after
+				// (within the 1000ms reset window) must not also be hijacked as a close.
+				this.closeEventFired = false;
+				if (this.closeEventResetTimer) {
+					clearTimeout(this.closeEventResetTimer);
+					this.closeEventResetTimer = null;
+				}
 				e.preventDefault();
 				// Electron: cancel close (returnValue is deprecated type — workaround via cast)
 				(e as { returnValue: boolean }).returnValue = false;

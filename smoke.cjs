@@ -133,6 +133,21 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   ok((appEvents["second-instance"]||[]).length===0 && (appEvents["browser-window-created"]||[]).length===0, "onunload: single-instance listeners removed (no leaks)");
   ok((log.listeners["close"]||[]).length===0, "onunload: close listener removed (no leaks)");
   ok(log.trayDestroyed===1, "onunload: tray destroyed");
+
+  // ── beforeunload / reload-hijack guard ──
+  // closeEventFired must be *consumed* by beforeunload, not just time-gated, so a reload
+  // fired shortly after a hide-to-tray isn't itself hijacked into another hide.
+  const p6 = new PluginClass(app, { id:"obsidian-still-running" });
+  await p6.onload();
+  (log.listeners["close"]||[]).forEach(fn=>fn({preventDefault(){}})); // real close → sets closeEventFired
+  let bu1Prevented=false;
+  (_winListeners["beforeunload"]||[]).forEach(fn=>fn({preventDefault(){bu1Prevented=true;}}));
+  ok(bu1Prevented===true, "beforeunload: real close is intercepted (hide to tray)");
+  let bu2Prevented=false;
+  (_winListeners["beforeunload"]||[]).forEach(fn=>fn({preventDefault(){bu2Prevented=true;}}));
+  ok(bu2Prevented===false, "beforeunload: flag consumed — an immediate reload after is NOT hijacked into another hide");
+  p6.onunload();
+
   // quitCompletely: bypass reallyQuitting then close
   const p2 = new PluginClass(app, {id:"obsidian-still-running"}); await p2.onload();
   p2.quitCompletely();
