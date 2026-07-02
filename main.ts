@@ -559,7 +559,11 @@ export default class BackgroundTrayPlugin extends Plugin {
 		const os = windowRequire("os") as OsModule | null;
 		const path = windowRequire("path") as PathModule | null;
 		if (!os || !path) return "";
-		return path.join(os.tmpdir(), `obsidian-still-running-${vault}.sock`);
+		// Prefer a per-user, non-world-readable runtime dir over the shared os.tmpdir()
+		// (predictable path there is squattable by another local user on multi-user Linux).
+		const runtimeDir = process.env?.XDG_RUNTIME_DIR;
+		const dir = runtimeDir && runtimeDir.length > 0 ? runtimeDir : os.tmpdir();
+		return path.join(dir, `obsidian-still-running-${vault}.sock`);
 	}
 
 	private async createIpcServer() {
