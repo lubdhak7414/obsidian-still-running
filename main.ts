@@ -156,6 +156,17 @@ function windowRequire(id: string): unknown {
 	}
 }
 
+// Short deterministic hash (FNV-1a) so sanitized vault names that collapse to the same
+// string (e.g. "My Vault" / "My!Vault") still resolve to distinct socket/pipe paths.
+function fnv1aHex(input: string): string {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < input.length; i++) {
+		hash ^= input.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return (hash >>> 0).toString(16);
+}
+
 function getRemote(): ElectronRemote | null {
 	const remote = windowRequire("@electron/remote") as ElectronRemote | null;
 	if (remote) return remote;
@@ -568,7 +579,11 @@ export default class BackgroundTrayPlugin extends Plugin {
 	// by opening a local socket (Unix domain socket / Windows named pipe) at a vault-specific fixed path.
 	// On connection, only call toggleWindow() — message parsing not needed.
 	getSocketPath(): string {
-		const vault = this.app.vault.getName().replace(/[^a-zA-Z0-9_-]/g, "_");
+		const rawVault = this.app.vault.getName();
+		// Sanitizing collapses distinct vault names (e.g. "My Vault" and "My!Vault") to the
+		// same string — append a short hash of the raw name so they still get distinct paths.
+		const vault =
+			rawVault.replace(/[^a-zA-Z0-9_-]/g, "_") + "-" + fnv1aHex(rawVault);
 		if (process.platform === "win32") {
 			return `\\\\.\\pipe\\obsidian-still-running-${vault}`;
 		}
