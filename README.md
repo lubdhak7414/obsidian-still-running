@@ -1,12 +1,12 @@
-![Background Tray — keep Obsidian in the system tray](assets/banner.jpg)
+![Still Running — keep Obsidian in the system tray](assets/banner.jpg)
 
-# Background Tray
+# Still Running
 
 Keep Obsidian running in the system tray instead of quitting when you close the window.
 
-**One job, done well.** Background Tray is intentionally tiny and single-purpose — close-to-tray and a tray icon, nothing else. No background services, no extra UI, no bloat. Turn it off and Obsidian behaves exactly as before.
+**One job, done well.** Still Running is intentionally tiny and single-purpose — close-to-tray and a tray icon, nothing else. No background services, no extra UI, no bloat. Turn it off and Obsidian behaves exactly as before.
 
-A robust, modern reimplementation of the (now unmaintained) `obsidian-tray`, built for Obsidian / Electron in 2026.
+A robust, modern reimplementation of the (now unmaintained) `obsidian-tray`, built for Obsidian / Electron in 2026. Originally forked from Synaphi's `background-tray`.
 
 > Desktop only. Windows and macOS are fully supported. Linux tray behaviour depends on your desktop environment and is best-effort.
 
@@ -23,14 +23,15 @@ A robust, modern reimplementation of the (now unmaintained) `obsidian-tray`, bui
 - **Single-instance focus** — relaunching Obsidian while it's hidden in the tray restores the existing window instead of opening the vault switcher. (Toggle in settings.)
 - **Quit completely / Relaunch** — from the tray icon's right-click menu.
 - **Custom tray icon & tooltip** — `{{vault}}` is replaced with the vault name.
+- **External toggle (optional)** — expose Show/Hide over a local socket so an OS-level global keyboard shortcut can bring Obsidian back without touching the mouse. See [below](#show--hide-with-a-global-keyboard-shortcut).
 - Turning the plugin off restores all default behaviour completely (no leftover listeners).
 
 ## Install
 
-**Community store:** Settings → Community plugins → Browse → search **Background Tray** → Install → Enable.
+**Community store:** Settings → Community plugins → Browse → search **Still Running** → Install → Enable.
 
 **Manual:** copy `main.js`, `manifest.json`, and `styles.css` into
-`<vault>/.obsidian/plugins/background-tray/`, then enable it under
+`<vault>/.obsidian/plugins/obsidian-still-running/`, then enable it under
 Settings → Community plugins.
 
 **BRAT (beta):** add this repo in the BRAT plugin.
@@ -39,20 +40,42 @@ Settings → Community plugins.
 
 Close the window and Obsidian keeps running in the tray — and so does your sync. Click the tray icon to bring it back. To actually quit, right-click the tray icon and choose **Quit completely**.
 
-## What's new in 1.0.7
+## Show / hide with a global keyboard shortcut
 
-- **Fix:** relaunching Obsidian from the taskbar while it is hidden in the tray now restores the existing window without closing the transient vault switcher. The switcher is hidden and removed from the taskbar instead, avoiding Electron's `window-all-closed` quit path.
+The tray icon works with a mouse, but the plugin can also expose the show/hide toggle over a local socket (Settings → Still Running → **Enable external toggle**), so it can be bound to an OS-level global hotkey instead. Any tool that can run a shell command on a hotkey works.
 
-## What's new in 1.0.6
+### Linux
 
-- **Fix:** relaunching Obsidian from the taskbar while it was hidden in the tray could quit the running instance. The vault switcher is now suppressed safely without ever tearing down the existing window.
-- Removed the command-palette entries to keep the plugin strictly single-purpose (everything is on the tray icon's right-click menu).
+Requires `socat` (most distros package it; `sudo apt install socat` / `sudo pacman -S socat`).
 
-## What's new in 1.0.5
+1. Enable **External toggle** in the plugin settings and copy the socket path shown there.
+2. Bind a global shortcut in your desktop environment (e.g. KDE: System Settings → Shortcuts → Custom Shortcuts → New → Global Shortcut → Command/URL) to:
+   ```bash
+   echo x | socat - UNIX-CONNECT:/path/to/the/socket
+   ```
+3. Trigger the shortcut — Obsidian shows/hides.
 
-- Reopening Obsidian from the taskbar while it's hidden in the tray no longer flickers (the vault switcher is suppressed before it ever appears).
-- Cleaner default tray tooltip (`{{vault}} - Background Tray`).
-- Documented that keeping Obsidian in the tray lets Obsidian Sync keep running in the background.
+### macOS
+
+Same idea, using the Unix socket path shown in settings:
+
+```bash
+echo x | nc -U /path/to/the/socket
+```
+
+Bind that command to a hotkey with something like [Keyboard Maestro](https://www.keyboardmaestro.com/), [BetterTouchTool](https://folivora.ai/), or `skhd` + a small shell script. macOS has no built-in "run shell command on global hotkey" feature, so a third-party trigger app is required.
+
+### Windows
+
+The plugin listens on a named pipe instead of a Unix socket. From PowerShell:
+
+```powershell
+$pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", "obsidian-still-running-<vault>", [System.IO.Pipes.PipeDirection]::Out)
+$pipe.Connect(1000)
+$pipe.Dispose()
+```
+
+Save that as a `.ps1` script and bind it to a global hotkey with a tool like [AutoHotkey](https://www.autohotkey.com/) (`Run, powershell -File "toggle.ps1"`) or the Microsoft PowerToys Keyboard Manager + a shortcut launcher.
 
 ## Building
 
@@ -64,4 +87,4 @@ npm run build   # typecheck + production bundle
 
 ## License
 
-MIT © Synaphi
+MIT. Originally by Synaphi; this fork maintained by [lubdhak7414](https://github.com/lubdhak7414).

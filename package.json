@@ -1,5 +1,5 @@
 {
-	"name": "background-tray",
+	"name": "obsidian-still-running",
 	"version": "1.0.7",
 	"description": "Keep running in the system tray instead of quitting when you close the window.",
 	"main": "main.js",
@@ -14,7 +14,7 @@
 		"tray",
 		"electron"
 	],
-	"author": "Synaphi",
+	"author": "Safwan Usaid Lubdhak",
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^20.12.7",
