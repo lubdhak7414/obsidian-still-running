@@ -199,6 +199,15 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   ok(![...vaultFiles.keys()].some(k=>k.includes("..")), "createQuickNote: '..' in folder setting is stripped");
   pNote4.onunload();
 
+  // two notes created within the same second (same moment() stamp) must not collide
+  const pNote3 = new PluginClass(app, { id:"obsidian-still-running" });
+  await pNote3.onload();
+  const filesBefore3 = vaultFiles.size;
+  await pNote3.createQuickNote();
+  await pNote3.createQuickNote();
+  ok(vaultFiles.size === filesBefore3 + 2, "createQuickNote: same-second collision creates two distinct files");
+  pNote3.onunload();
+
   // ── Start minimized to tray ──
   fakeWin._visible = true;
   const p5 = new PluginClass(app, { id:"obsidian-still-running" });

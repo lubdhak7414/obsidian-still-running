@@ -731,10 +731,21 @@ export default class BackgroundTrayPlugin extends Plugin {
 			}
 
 			const stamp = moment().format("YYYY-MM-DD HHmmss");
-			const filename = `Untitled ${stamp}.md`;
-			const path = folder ? `${folder}/${filename}` : filename;
-
-			const file = await this.app.vault.create(path, content);
+			let file = null;
+			// Two notes triggered within the same second would otherwise collide on the
+			// exact same filename; fall back to a numeric suffix like Obsidian itself does.
+			for (let suffix = 0; suffix < 100; suffix++) {
+				const filename = `Untitled ${stamp}${suffix ? ` (${suffix})` : ""}.md`;
+				const path = folder ? `${folder}/${filename}` : filename;
+				if (this.app.vault.getAbstractFileByPath(path)) continue;
+				try {
+					file = await this.app.vault.create(path, content);
+					break;
+				} catch {
+					continue; // lost the race to another concurrent create — try the next suffix
+				}
+			}
+			if (!file) throw new Error("could not find an available filename");
 			this.showWindow();
 			try {
 				await this.app.workspace.getLeaf(false).openFile(file);
