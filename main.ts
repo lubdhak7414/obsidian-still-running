@@ -92,6 +92,7 @@ interface NetSocket {
 	end(): void;
 	on(event: "data", listener: (chunk: Buffer) => void): void;
 	on(event: "end", listener: () => void): void;
+	on(event: "error", listener: (err: Error) => void): void;
 }
 
 interface NetServer {
@@ -556,6 +557,10 @@ export default class BackgroundTrayPlugin extends Plugin {
 			}
 			const server = net.createServer((socket) => {
 				let data = "";
+				socket.on("error", (err) => {
+					// e.g. client aborted mid-write (ECONNRESET) — must not throw uncaught in the renderer.
+					console.error("Still Running: external toggle connection error", err);
+				});
 				socket.on("data", (chunk) => {
 					data += chunk.toString();
 				});
