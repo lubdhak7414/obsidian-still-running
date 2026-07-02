@@ -91,6 +91,7 @@ interface ElectronRemote {
 // ── Node built-in modules (local socket for external toggle) minimal types ──────────────────
 interface NetSocket {
 	end(): void;
+	destroy(): void;
 	on(event: "data", listener: (chunk: Buffer) => void): void;
 	on(event: "end", listener: () => void): void;
 	on(event: "error", listener: (err: Error) => void): void;
@@ -640,8 +641,18 @@ export default class BackgroundTrayPlugin extends Plugin {
 			}
 			const server = net.createServer((socket) => {
 				let data = "";
+				// A client that connects but never sends "end" (buggy/crashed script) would
+				// otherwise hold the connection open indefinitely — force-close it.
+				const idleTimeout = setTimeout(() => {
+					try {
+						socket.destroy();
+					} catch {
+						/* ignore */
+					}
+				}, 5000);
 				socket.on("error", (err) => {
 					// e.g. client aborted mid-write (ECONNRESET) — must not throw uncaught in the renderer.
+					clearTimeout(idleTimeout);
 					console.error("Still Running: external toggle connection error", err);
 				});
 				socket.on("data", (chunk) => {
@@ -650,6 +661,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 					if (data.length < 256) data += chunk.toString();
 				});
 				socket.on("end", () => {
+					clearTimeout(idleTimeout);
 					try {
 						const cmd = data.trim().toLowerCase();
 						if (cmd === "note" || cmd === "new-note") {
