@@ -24,7 +24,8 @@ A robust, modern reimplementation of the (now unmaintained) `obsidian-tray`, bui
 - **Single-instance focus** — relaunching Obsidian while it's hidden in the tray restores the existing window instead of opening the vault switcher. (Toggle in settings.)
 - **Quit completely / Relaunch** — from the tray icon's right-click menu.
 - **Custom tray icon & tooltip** — `{{vault}}` is replaced with the vault name.
-- **External toggle (optional)** — expose Show/Hide over a local socket so an OS-level global keyboard shortcut can bring Obsidian back without touching the mouse. See [below](#show--hide-with-a-global-keyboard-shortcut).
+- **External toggle (optional)** — expose Show/Hide over a local socket so an OS-level global keyboard shortcut can bring Obsidian back without touching the mouse.  
+  See [below](#show--hide-or-create-a-note-with-a-global-keyboard-shortcut).
 - Turning the plugin off restores all default behaviour completely (no leftover listeners).
 
 ## Install
