@@ -181,6 +181,11 @@ export default class BackgroundTrayPlugin extends Plugin {
 	private lastRelaunchAt = 0;
 	private reallyQuitting = false;
 	private trayEpoch = 0;
+	// Set by the "close" event, which Electron always fires before "beforeunload" for a
+	// real window close (and never fires for webContents.reload()). Gates beforeunload so
+	// "Reload app without saving" / plugin-update reloads aren't hijacked into a hide-to-tray.
+	private closeEventFired = false;
+	private closeEventResetTimer: ReturnType<typeof setTimeout> | null = null;
 	private ipcServer: NetServer | null = null;
 	private socketPath: string | null = null;
 
@@ -257,7 +262,11 @@ export default class BackgroundTrayPlugin extends Plugin {
 		if (typeof window === "undefined") return;
 		this.removeBeforeUnload(); // duplicate registration guard
 		this.beforeUnloadHandler = (e: BeforeUnloadEvent) => {
-			if (this.settings.runInBackground && !this.reallyQuitting) {
+			if (
+				this.settings.runInBackground &&
+				!this.reallyQuitting &&
+				this.closeEventFired
+			) {
 				e.preventDefault();
 				// Electron: cancel close (returnValue is deprecated type — workaround via cast)
 				(e as { returnValue: boolean }).returnValue = false;
@@ -279,6 +288,11 @@ export default class BackgroundTrayPlugin extends Plugin {
 			);
 		}
 		this.beforeUnloadHandler = null;
+		if (this.closeEventResetTimer) {
+			clearTimeout(this.closeEventResetTimer);
+			this.closeEventResetTimer = null;
+		}
+		this.closeEventFired = false;
 	}
 
 	// ── Close interception ② window.on("close") (fallback) ─────────────────
@@ -288,6 +302,16 @@ export default class BackgroundTrayPlugin extends Plugin {
 		this.removeCloseInterception(); // duplicate registration guard
 		this.closeHandler = (e: ElectronEvent) => {
 			if (this.settings.runInBackground && !this.reallyQuitting) {
+				// Mark that a real window close is in flight so the beforeunload handler
+				// (which also fires on reload/plugin-update, where "close" never fires)
+				// knows this occurrence is a genuine close. Auto-clears as a safety net
+				// in case beforeunload doesn't follow within the same close sequence.
+				this.closeEventFired = true;
+				if (this.closeEventResetTimer)
+					clearTimeout(this.closeEventResetTimer);
+				this.closeEventResetTimer = setTimeout(() => {
+					this.closeEventFired = false;
+				}, 1000);
 				e.preventDefault();
 				try {
 					win.hide();
