@@ -179,6 +179,10 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   await p3.refreshIpcServer();
   const sockPath = p3.socketPath;
   ok(!!sockPath && fsReal.existsSync(sockPath), "external toggle: socket file created");
+  if (process.platform !== "win32") {
+    const mode = fsReal.statSync(sockPath).mode & 0o777;
+    ok(mode === 0o600, "external toggle: socket file restricted to owner (0600), not world-readable");
+  }
   const shownBefore3 = log.shown, hiddenBefore3 = log.hidden;
   await new Promise((resolve, reject) => {
     const client = net.createConnection(sockPath, () => client.end());

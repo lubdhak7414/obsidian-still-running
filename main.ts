@@ -108,6 +108,7 @@ interface NetModule {
 interface FsModule {
 	existsSync(path: string): boolean;
 	unlinkSync(path: string): void;
+	chmodSync(path: string, mode: number): void;
 }
 
 interface OsModule {
@@ -671,6 +672,16 @@ export default class BackgroundTrayPlugin extends Plugin {
 				}
 			});
 			server.listen(socketPath);
+			// XDG_RUNTIME_DIR is already per-user (0700), but the os.tmpdir() fallback
+			// (e.g. no systemd, SSH sessions) is world-readable — restrict to the owner so
+			// another local user on a shared machine can't toggle the window / create notes.
+			if (process.platform !== "win32") {
+				try {
+					fs.chmodSync(socketPath, 0o600);
+				} catch {
+					/* best-effort */
+				}
+			}
 			this.ipcServer = server;
 			this.socketPath = socketPath;
 		} catch (e) {
