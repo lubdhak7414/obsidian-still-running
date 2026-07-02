@@ -61,7 +61,7 @@ Object.defineProperty(global, "navigator", {
 const obsidianStub = { Plugin, PluginSettingTab, Setting, Notice, App: class {}, moment, TFile, Platform, setIcon };
 
 // ── @electron/remote stub ──
-const log = { listeners:{}, hidden:0, shown:0, focused:0, trayCreated:0, trayDestroyed:0, prevented:0, quit:0 };
+const log = { listeners:{}, hidden:0, shown:0, focused:0, trayCreated:0, trayDestroyed:0, prevented:0, quit:0, appQuit:0 };
 const fakeWin = {
   _visible:true, _min:false,
   on(ev,fn){ (log.listeners[ev]=log.listeners[ev]||[]).push(fn); },
@@ -78,7 +78,7 @@ const nativeImage = { createFromPath(){ return {isEmpty(){return true;}}; }, cre
 // app (main process) event registry — for validating single-instance (relaunch) paths.
 const appEvents = {};
 const remoteStub = { getCurrentWindow(){ return fakeWin; }, Tray, Menu, nativeImage, app:{
-  quit(){log.quit++;}, relaunch(){}, exit(){}, dock:{show(){}},
+  quit(){log.quit++; log.appQuit++;}, relaunch(){}, exit(){}, dock:{show(){}},
   async getFileIcon(){ return {isEmpty(){return true;}}; },
   prependListener(ev,fn){ (appEvents[ev]=appEvents[ev]||[]).unshift(fn); },
   on(ev,fn){ (appEvents[ev]=appEvents[ev]||[]).push(fn); },
@@ -125,6 +125,27 @@ const fakeWorkspace = { getLeaf(){ return { async openFile(f){ openedFiles.push(
 const app = { vault: fakeVault, workspace: fakeWorkspace };
 const p = new PluginClass(app, { id:"obsidian-still-running" });
 
+// Fake secondary BrowserWindow (vault picker / popout pane / another vault's window).
+// _url mirrors webContents.getURL(): "" until the fake page load completes — real windows
+// are created hidden and can't become visible before their load resolves, at which point
+// their URL is readable. finishLoadAndShow() mirrors Obsidian's own
+// `win.loadURL(url).then(() => win.show())` sequence.
+function makeSecondaryWindow(id){
+  const w = { id, _visible:false, _url:"", hidden:0, closed:0, skipTaskbar:false, _ev:{},
+    on(ev,fn){ (w._ev[ev]=w._ev[ev]||[]).push(fn); },
+    removeListener(ev,fn){ w._ev[ev]=(w._ev[ev]||[]).filter(f=>f!==fn); },
+    fire(ev){ (w._ev[ev]||[]).slice().forEach(f=>f()); },
+    hide(){ w._visible=false; w.hidden++; }, show(){ w._visible=true; },
+    close(){ w.closed++; },
+    setSkipTaskbar(v){ w.skipTaskbar=v; },
+    isDestroyed(){ return w.closed>0; }, isVisible(){ return w._visible; },
+    webContents: { getURL(){ return w._url; } },
+    finishLoadAndShow(url){ w._url=url; w._visible=true; w.fire("show"); },
+  };
+  return w;
+}
+const STARTER_URL = "app://obsidian.md/starter.html";
+
 (async () => {
   let fail=0; const ok=(c,m)=>{ console.log((c?"  PASS":"  FAIL")+" — "+m); if(!c)fail++; };
   await p.onload();
@@ -142,47 +163,104 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   // ── Tray tooltip default (task 1) ──
   ok(log.tooltip==="TestVault - Still Running", "tray tooltip = '<vault> - Still Running'");
   // ── Single-instance relaunch flicker fix (task 2) ──
-  //   When relaunching from taskbar, second-instance → restore existing window + hide vault selection dialog immediately.
+  //   When relaunching while hidden in the tray, Obsidian's own relaunch path (not Electron's
+  //   "second-instance" — see main.ts comment) creates a vault-picker window. We gate
+  //   interception on "is our window currently hidden", not on second-instance having fired
+  //   first (that race is the actual bug this test now guards against), so simulate the real
+  //   pre-condition: our window hidden in the tray before the picker ever appears.
+  fakeWin.hide();
   ok((appEvents["second-instance"]||[]).length===1, "second-instance listener registered");
   ok((appEvents["browser-window-created"]||[]).length===1, "browser-window-created listener registered");
   const shownBefore=log.shown, quitBefore=log.quit;
   remoteStub.app._emit("second-instance");
   ok(log.shown>shownBefore, "relaunch restores existing window (show)");
   // Vault selection dialog created shortly after by Obsidian (new window, id=2) — supports show/ready-to-show events.
-  const picker={ id:2, _visible:true, hidden:0, closed:0, skipTaskbar:false, _ev:{},
-    on(ev,fn){ (this._ev[ev]=this._ev[ev]||[]).push(fn); },
-    removeListener(ev,fn){ this._ev[ev]=(this._ev[ev]||[]).filter(f=>f!==fn); },
-    fire(ev){ (this._ev[ev]||[]).slice().forEach(f=>f()); },
-    hide(){ this._visible=false; this.hidden++; }, close(){ this.closed++; },
-    setSkipTaskbar(v){ this.skipTaskbar=v; },
-    isDestroyed(){ return this.closed>0; }, isVisible(){ return this._visible; } };
+  const picker = makeSecondaryWindow(2);
   remoteStub.app._emit("browser-window-created", {preventDefault(){}}, picker);
   picker.fire("ready-to-show");
-  picker.fire("show");
+  picker.finishLoadAndShow(STARTER_URL);
   ok(picker.hidden>=1 && picker._visible===false, "vault selection dialog: hidden immediately when shown (prevents flicker)");
   await new Promise(r=>setTimeout(r,220));
   ok(picker.closed===0, "vault selection dialog: not closed (prevents window-all-closed exit flow)");
   ok(picker.skipTaskbar===true, "vault selection dialog: excluded from taskbar");
   const hiddenAfterSettle = picker.hidden;
-  picker.fire("show"); // spurious extra "show" event after everything has settled
-  ok(picker.hidden===hiddenAfterSettle, "vault selection dialog: hidePicker listener removed after first fire (no leak)");
+  // Obsidian's own picker code shows the window asynchronously — only after its starter.html
+  // load resolves — which can land after our own hide attempts have already run. hidePicker
+  // must NOT have removed its listeners by then, or this later, real .show() call would sail
+  // through unguarded and leave the picker fully visible (this was the actual regression).
+  picker._visible = true;
+  picker.fire("show");
+  ok(picker.hidden>hiddenAfterSettle && picker._visible===false, "vault selection dialog: a late show() (Obsidian's own loadURL-resolution show, arriving after our hide attempts) is still caught and re-hidden");
   ok(log.quit===quitBefore, "★exit regression prevention: existing Obsidian not quit/closed (quit not called)");
-  // A second, later window in the same relaunch span (e.g. a legitimate popout pane the
-  // user opens right after relaunching) must NOT be caught by the picker-hiding logic —
-  // only the single next window after second-instance is treated as the picker.
-  const popout={ id:3, _visible:true, hidden:0, closed:0, skipTaskbar:false, _ev:{},
-    on(ev,fn){ (this._ev[ev]=this._ev[ev]||[]).push(fn); },
-    fire(ev){ (this._ev[ev]||[]).forEach(f=>f()); },
-    hide(){ this._visible=false; this.hidden++; }, close(){ this.closed++; },
-    setSkipTaskbar(v){ this.skipTaskbar=v; },
-    isDestroyed(){ return this.closed>0; }, isVisible(){ return this._visible; } };
+  // A second, later window while our own window is visible again (e.g. a legitimate popout
+  // pane the user opens right after relaunching) must NOT be caught by the picker-hiding
+  // logic — the hidden-state gate rejects it before any listeners are even attached.
+  const popout = makeSecondaryWindow(3);
   remoteStub.app._emit("browser-window-created", {preventDefault(){}}, popout);
-  ok(popout.hidden===0 && popout.skipTaskbar===false, "single-instance: later window in same relaunch span is left untouched");
+  popout.finishLoadAndShow("app://obsidian.md/index.html");
+  ok(popout.hidden===0 && popout.skipTaskbar===false && popout._visible===true, "single-instance: later window while we're visible again is left untouched");
   // onunload: complete cleanup (no leaks)
   p.onunload();
   ok((appEvents["second-instance"]||[]).length===0 && (appEvents["browser-window-created"]||[]).length===0, "onunload: single-instance listeners removed (no leaks)");
   ok((log.listeners["close"]||[]).length===0, "onunload: close listener removed (no leaks)");
   ok(log.trayDestroyed===1, "onunload: tray destroyed");
+
+  // ── Single-instance: picker created WITHOUT second-instance ever firing ──
+  // This is the actual reported bug: Obsidian's real relaunch path on Linux/macOS goes
+  // through its own .obsidian-cli.sock protocol, not Electron's "second-instance" event —
+  // so the picker window can (and does) show up with no "second-instance" signal at all.
+  // Interception must not depend on that event having fired first.
+  const p8 = new PluginClass(app, { id:"obsidian-still-running" });
+  await p8.onload();
+  fakeWin.hide();
+  // Deliberately never emit "second-instance" here — only the picker window shows up,
+  // mirroring the real .obsidian-cli.sock-only relaunch path.
+  const picker2 = makeSecondaryWindow(2);
+  remoteStub.app._emit("browser-window-created", {preventDefault(){}}, picker2);
+  picker2.fire("ready-to-show");
+  picker2.finishLoadAndShow(STARTER_URL);
+  ok(picker2.hidden>=1 && picker2._visible===false, "picker-without-second-instance: picker still intercepted purely from our window being hidden");
+  ok(picker2.skipTaskbar===true, "picker-without-second-instance: picker skip-taskbarred once its starter.html URL identifies it");
+  await new Promise(r=>setTimeout(r,220));
+  ok(picker2.closed===0, "picker-without-second-instance: picker not closed (avoids window-all-closed exit flow)");
+  ok(fakeWin._visible===true, "picker-without-second-instance: our own window is restored to the front regardless");
+
+  // ── Single-instance: URL veto — a non-picker window created while we're hidden is spared ──
+  // The hidden-state gate alone would false-positive on e.g. another vault's window opened
+  // via an obsidian:// URI while we sit in the tray. Once the new window's URL is readable
+  // and is NOT starter.html, it must be left alone (and must not get skip-taskbarred).
+  fakeWin.hide();
+  const otherVault = makeSecondaryWindow(5);
+  remoteStub.app._emit("browser-window-created", {preventDefault(){}}, otherVault);
+  otherVault.finishLoadAndShow("app://obsidian.md/index.html");
+  ok(otherVault._visible===true, "url veto: non-picker window created while hidden stays visible once its URL identifies it");
+  await new Promise(r=>setTimeout(r,220));
+  ok(otherVault._visible===true && otherVault.hidden===0 && otherVault.skipTaskbar===false, "url veto: 0ms/150ms fallback hides also spare it (never hidden, never skip-taskbarred)");
+  p8.onunload();
+
+  // ── Regression guard: single-instance failure must never take down tray/close/hide ──
+  // The real-world regression this guards: a remote-proxy access throwing inside
+  // registerSingleInstance() aborted onload() before createTray()/createIpcServer()/
+  // addSettingTab() ever ran — the untouched core features all died with it. Simulate a
+  // hostile remote proxy (property access itself throws) and assert the rest of onload
+  // still completes.
+  const pCrash = new PluginClass(app, { id:"obsidian-still-running" });
+  const trayBefore9 = log.trayCreated;
+  const origPrepend = remoteStub.app.prependListener;
+  Object.defineProperty(remoteStub.app, "prependListener", {
+    configurable: true,
+    get(){ throw new Error("remote proxy exploded"); },
+  });
+  await pCrash.onload();
+  Object.defineProperty(remoteStub.app, "prependListener", {
+    configurable: true, writable: true, enumerable: true, value: origPrepend,
+  });
+  ok(log.trayCreated===trayBefore9+1, "single-instance crash containment: tray still created");
+  ok((log.listeners["close"]||[]).length===1, "single-instance crash containment: close interception still registered");
+  ok(pCrash._tabs.length===1, "single-instance crash containment: settings tab still added (onload ran to completion)");
+  ok((appEvents["browser-window-created"]||[]).length===1, "single-instance crash containment: window-created hook still degrades gracefully (registered despite second-instance failure)");
+  pCrash.onunload();
+  ok((appEvents["browser-window-created"]||[]).length===0, "single-instance crash containment: degraded registration still cleaned up on unload");
 
   // ── beforeunload / reload-hijack guard ──
   // closeEventFired must be *consumed* by beforeunload, not just time-gated, so a reload
@@ -198,16 +276,34 @@ const p = new PluginClass(app, { id:"obsidian-still-running" });
   ok(bu2Prevented===false, "beforeunload: flag consumed — an immediate reload after is NOT hijacked into another hide");
   p6.onunload();
 
-  // quitCompletely: bypass reallyQuitting then close
+  // quitCompletely: bypass reallyQuitting then quit
   const p2 = new PluginClass(app, {id:"obsidian-still-running"}); await p2.onload();
+  const appQuitBefore2 = log.appQuit;
   p2.quitCompletely();
-  ok(log.quit>=1, "quitCompletely: real quit path called");
+  ok(log.appQuit>appQuitBefore2, "quitCompletely: app.quit() called (not just win.close())");
   // Close interception bypass verification: in reallyQuitting state, close event → preventDefault not called
   let prevented2=false; (log.listeners["close"]||[]).forEach(fn=>fn({preventDefault(){prevented2=true;}}));
   ok(prevented2===false, "reallyQuitting bypasses close interception");
   p2.onunload();
 
-  // quitCompletely: if BOTH close paths fail, reallyQuitting must reset (else hide-to-tray breaks forever)
+  // quitCompletely: regression guard — a suppressed relaunch vault-picker window is kept
+  // alive-but-hidden (see interceptPossiblePickerWindow), so win.close() on our own window
+  // alone would leave that hidden window open and the process would never actually exit
+  // (observed regression: user had to `pkill` Obsidian after "Quit completely" did nothing).
+  // app.quit() must be the mechanism used, since only it tears down every window.
+  const p9 = new PluginClass(app, { id:"obsidian-still-running" });
+  await p9.onload();
+  fakeWin.hide();
+  const lingeringPicker = makeSecondaryWindow(9);
+  remoteStub.app._emit("browser-window-created", {preventDefault(){}}, lingeringPicker);
+  lingeringPicker.finishLoadAndShow(STARTER_URL);
+  fakeWin.show();
+  const appQuitBefore3 = log.appQuit;
+  p9.quitCompletely();
+  ok(log.appQuit>appQuitBefore3, "quitCompletely: app.quit() still used even with a lingering hidden picker window (would otherwise zombie)");
+  p9.onunload();
+
+  // quitCompletely: if BOTH quit paths fail, reallyQuitting must reset (else hide-to-tray breaks forever)
   const p7 = new PluginClass(app, { id:"obsidian-still-running" });
   await p7.onload();
   const origClose = fakeWin.close, origQuit = remoteStub.app.quit;

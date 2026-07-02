@@ -32,8 +32,15 @@ interface NativeImageLike {
 	isEmpty(): boolean;
 }
 
+interface ElectronWebContents {
+	getURL(): string;
+}
+
 interface ElectronWindow {
 	id: number;
+	// Optional: only used (behind try/catch) to positively identify Obsidian's vault-picker
+	// window by the URL it loaded — some remote bridges may not expose it.
+	webContents?: ElectronWebContents;
 	hide(): void;
 	show(): void;
 	focus(): void;
@@ -270,8 +277,9 @@ export default class BackgroundTrayPlugin extends Plugin {
 	// "Reload app without saving" / plugin-update reloads aren't hijacked into a hide-to-tray.
 	private closeEventFired = false;
 	private closeEventResetTimer: ReturnType<typeof setTimeout> | null = null;
-	private awaitingPickerWindow = false;
-	private awaitingPickerTimer: ReturnType<typeof setTimeout> | null = null;
+	private hiddenAtRelaunchStart = false;
+	private hiddenAtRelaunchStartTimer: ReturnType<typeof setTimeout> | null =
+		null;
 	private ipcServer: NetServer | null = null;
 	private socketPath: string | null = null;
 
@@ -301,11 +309,23 @@ export default class BackgroundTrayPlugin extends Plugin {
 		//       preventDefault is observed to be ignored (see 01. Spec §3.1·§3.3) → beforeunload is the actual mechanism.
 		this.registerBeforeUnload();
 		this.registerCloseInterception();
-		// Restore existing window on relaunch when hidden in tray (+ suppress vault selection dialog).
-		this.registerSingleInstance();
 
 		if (this.settings.createTrayIcon) await this.createTray();
 		if (this.settings.enableExternalToggle) await this.createIpcServer();
+
+		// Restore existing window on relaunch when hidden in tray (+ suppress vault selection
+		// dialog). This feature reverse-engineers Obsidian's own relaunch handling, so it's the
+		// most likely piece to misbehave on a new Obsidian/Electron build — it registers *after*
+		// the core tray/close/hide features and is fenced by its own try/catch (on top of the
+		// internal ones), so no failure in it can ever block the rest of onload().
+		try {
+			this.registerSingleInstance();
+		} catch (e) {
+			console.error(
+				"Still Running: single-instance registration failed",
+				e
+			);
+		}
 
 		if (this.settings.startMinimized) {
 			try {
@@ -434,145 +454,266 @@ export default class BackgroundTrayPlugin extends Plugin {
 
 	// ── Single-instance window focus ───────────────────────────────────────────
 	// When Obsidian is relaunched while hidden in the tray, Obsidian shows a vault selection
-	// dialog in second-instance (observed). → We restore the existing window, then close the
-	// newly created dialog to appear as "return to existing window". (Spec §4.6)
+	// dialog (observed). → We restore the existing window, then hide the newly created dialog
+	// to appear as "return to existing window". (Spec §4.6)
+	//
+	// Obsidian's relaunch handling does NOT go through Electron's native "second-instance"
+	// event on Linux/macOS — the relaunched process instead forwards its argv to the running
+	// instance over a private Unix socket (~/.obsidian-cli.sock), and *that* handler shows the
+	// picker window. Electron's "second-instance" still fires (the relaunch also fails
+	// app.requestSingleInstanceLock()), but it's a second, independent, unordered signal — it
+	// can arrive before or after the picker window is created. Gating "is this new window the
+	// picker" on a flag armed by "second-instance" is therefore a race: previously we only
+	// intercepted picker windows created *after* second-instance had already set the flag,
+	// which silently failed whenever the socket path won the race. Instead the primary gate is
+	// live state that doesn't depend on event ordering: whether our own window is currently
+	// hidden. Any window created while we're hidden and focusOnRelaunch is on can only be the
+	// picker — the user can't trigger a legitimate new pane from a hidden, unfocused window.
+	// One wrinkle: when second-instance *does* fire first, its handler eagerly shows our window
+	// (nice for snappy restore), which would make the live check blind to a picker that shows
+	// up a moment later. hiddenAtRelaunchStart is a short-lived snapshot taken right before that
+	// eager show, covering that ordering too — it's a convenience, not the correctness fix.
+	//
+	// On top of the hidden-state gate, the window is *positively identified* before being
+	// hidden: the vault picker loads Obsidian's starter.html, so once the new window's URL is
+	// readable (webContents.getURL()) and says it's something else — e.g. another vault's
+	// window opened via obsidian:// while we're hidden — it is spared. An empty URL just means
+	// "hasn't loaded yet" (the picker starts life at "" too, and can't be visible before its
+	// load resolves), and an unreadable URL (remote bridge doesn't expose webContents) falls
+	// back to the hidden-state gate alone.
+	//
+	// Failure discipline: this whole feature is reverse-engineered from Obsidian's minified
+	// relaunch handling, so it runs against the least-documented Electron surface in the
+	// plugin. Every step — registration, both handlers, cleanup — is individually fenced with
+	// try/catch: no matter what a real @electron/remote proxy throws, it must degrade to a
+	// silent no-op and never take tray/close/hide down with it.
 	private registerSingleInstance() {
-		const remote = this.remote;
-		const win = this.win;
-		if (!remote || !win) return;
-		const app = remote.app;
-		if (typeof app.prependListener !== "function") return;
-		this.removeSingleInstance(); // duplicate registration guard
-
-		let myId = -1;
 		try {
-			myId = win.id;
-		} catch {
-			/* id access unavailable */
-		}
+			const remote = this.remote;
+			const win = this.win;
+			if (!remote || !win) return;
+			const app = remote.app;
+			this.removeSingleInstance(); // duplicate registration guard
 
-		this.secondInstanceHandler = () => {
-			if (!this.settings.focusOnRelaunch) return;
-			// Only the *next* new window is treated as the vault picker — not every window
-			// created within the next 4s, which could otherwise catch a legitimate popout
-			// pane the user opens shortly after relaunching. Safety timeout in case no
-			// picker window ever arrives (e.g. Obsidian reuses the vault without a dialog).
-			this.awaitingPickerWindow = true;
-			if (this.awaitingPickerTimer) clearTimeout(this.awaitingPickerTimer);
-			this.awaitingPickerTimer = setTimeout(() => {
-				this.awaitingPickerWindow = false;
-			}, 4000);
-			this.showWindow();
-		};
-		this.windowCreatedHandler = (
-			_event: ElectronEvent,
-			w: ElectronWindow
-		) => {
-			if (!this.settings.focusOnRelaunch) return;
-			let id = -1;
+			// null (not -1) on failure — a freshly created window's id can be momentarily
+			// unreadable through @electron/remote (browser-window-created fires very early,
+			// sometimes before the remote proxy is fully registered), and defaulting both this
+			// and the new window's id to the same sentinel would make an unrelated picker window
+			// look like "our own window" and get silently skipped.
+			let myId: number | null = null;
 			try {
-				id = w.id;
+				myId = win.id;
 			} catch {
 				/* id access unavailable */
 			}
-			if (id === myId) return; // never touch our window
-			// Only the first window created after second-instance = vault selection dialog.
-			if (this.awaitingPickerWindow) {
-				this.awaitingPickerWindow = false;
-				if (this.awaitingPickerTimer) {
-					clearTimeout(this.awaitingPickerTimer);
-					this.awaitingPickerTimer = null;
-				}
-				// ★ Prevent flicker/exit regression:
-				//   - Hide the dialog immediately when it tries to show (ready-to-show/show) to avoid screen flicker.
-				//   - Don't close the new dialog. In Obsidian 1.12/Electron 39, even with a hidden main window,
-				//     closing the picker can enter the window-all-closed exit flow.
-				//   - Instead, exclude it from taskbar and restore only the existing window to foreground.
-				const hidePicker = () => {
-					try {
-						if (!w.isDestroyed()) w.hide();
-					} catch {
-						/* ignore hide failure */
-					}
-					try {
-						if (!w.isDestroyed()) w.setSkipTaskbar(true);
-					} catch {
-						/* unsupported on some platforms/windows */
-					}
-					// One-shot: don't keep listeners (and their closure over w/this) attached
-					// to the picker window indefinitely — it only ever needs to fire once.
-					try {
-						w.removeListener("ready-to-show", hidePicker);
-					} catch {
-						/* already removed */
-					}
-					try {
-						w.removeListener("show", hidePicker);
-					} catch {
-						/* already removed */
-					}
-				};
-				try {
-					w.on("ready-to-show", hidePicker);
-				} catch {
-					/* event not supported */
-				}
-				try {
-					w.on("show", hidePicker);
-				} catch {
-					/* event not supported */
-				}
-				window.setTimeout(hidePicker, 0);
-				window.setTimeout(() => {
-					try {
-						const win = this.win;
-						if (!this.remote || !win || win.isDestroyed()) return;
-						hidePicker();
-						this.showWindow();
-					} catch {
-						/* ignore window restore failure */
-					}
-				}, 150);
-			}
-		};
-		try {
-			// Prepend to restore existing window first.
-			app.prependListener("second-instance", this.secondInstanceHandler);
-			app.on("browser-window-created", this.windowCreatedHandler);
-		} catch (e) {
-			console.error("Still Running: failed to register single-instance", e);
-		}
-	}
 
-	private removeSingleInstance() {
-		const app = this.remote?.app;
-		if (app) {
+			this.secondInstanceHandler = () => {
+				try {
+					if (!this.settings.focusOnRelaunch) return;
+					try {
+						const w = this.win;
+						this.hiddenAtRelaunchStart =
+							!!w && !w.isDestroyed() && !w.isVisible();
+					} catch {
+						this.hiddenAtRelaunchStart = false;
+					}
+					if (this.hiddenAtRelaunchStartTimer)
+						clearTimeout(this.hiddenAtRelaunchStartTimer);
+					this.hiddenAtRelaunchStartTimer = setTimeout(() => {
+						this.hiddenAtRelaunchStart = false;
+					}, 4000);
+					this.showWindow();
+				} catch (e) {
+					console.error(
+						"Still Running: second-instance handler failed",
+						e
+					);
+				}
+			};
+			this.windowCreatedHandler = (
+				_event: ElectronEvent,
+				w: ElectronWindow
+			) => {
+				try {
+					this.interceptPossiblePickerWindow(w, myId);
+				} catch (e) {
+					console.error(
+						"Still Running: window-created handler failed",
+						e
+					);
+				}
+			};
+			// Registered separately so a failure of one (e.g. prependListener not proxied by
+			// this remote bridge) can't block the other — the browser-window-created hook is
+			// the one that actually suppresses the picker; second-instance is best-effort
+			// (Obsidian's own relaunch path on Linux/macOS doesn't rely on it, see above).
 			try {
-				if (this.secondInstanceHandler)
-					app.removeListener(
+				if (typeof app.prependListener === "function") {
+					// Prepend to restore the existing window first.
+					app.prependListener(
 						"second-instance",
 						this.secondInstanceHandler
 					);
-			} catch {
-				/* already removed */
+				} else {
+					this.secondInstanceHandler = null;
+				}
+			} catch (e) {
+				console.error(
+					"Still Running: failed to register second-instance listener",
+					e
+				);
+				this.secondInstanceHandler = null;
 			}
 			try {
-				if (this.windowCreatedHandler)
-					app.removeListener(
-						"browser-window-created",
-						this.windowCreatedHandler
-					);
-			} catch {
-				/* already removed */
+				app.on("browser-window-created", this.windowCreatedHandler);
+			} catch (e) {
+				console.error(
+					"Still Running: failed to register window-created listener",
+					e
+				);
+				this.windowCreatedHandler = null;
 			}
+		} catch (e) {
+			console.error(
+				"Still Running: failed to register single-instance",
+				e
+			);
+		}
+	}
+
+	// Runs for every new BrowserWindow while the plugin is loaded; decides whether it's the
+	// relaunch vault picker and, if so, keeps it hidden and restores our own window instead.
+	private interceptPossiblePickerWindow(
+		w: ElectronWindow,
+		myId: number | null
+	) {
+		if (!this.settings.focusOnRelaunch) return;
+		let id: number | null = null;
+		try {
+			id = w.id;
+		} catch {
+			/* id access unavailable */
+		}
+		if (id !== null && id === myId) return; // never touch our window
+		const myWin = this.win;
+		let weAreHidden = false;
+		try {
+			weAreHidden = !!myWin && !myWin.isDestroyed() && !myWin.isVisible();
+		} catch {
+			/* treat as not-hidden on inspection failure */
+		}
+		if (!weAreHidden && !this.hiddenAtRelaunchStart) {
+			return; // a legitimate new window while we're visible — leave it alone
+		}
+		this.hiddenAtRelaunchStart = false;
+		if (this.hiddenAtRelaunchStartTimer) {
+			clearTimeout(this.hiddenAtRelaunchStartTimer);
+			this.hiddenAtRelaunchStartTimer = null;
+		}
+
+		// ★ Prevent flicker/exit regression:
+		//   - Hide the dialog immediately when it tries to show (ready-to-show/show) to avoid screen flicker.
+		//   - Don't close the new dialog. In Obsidian 1.12/Electron 39, even with a hidden main window,
+		//     closing the picker can enter the window-all-closed exit flow.
+		//   - Instead, exclude it from taskbar and restore only the existing window to foreground.
+		// hidePicker deliberately keeps its "ready-to-show"/"show" listeners attached for the
+		// picker's whole lifetime instead of self-removing after the first call. Obsidian's
+		// own picker code shows itself asynchronously, after its starter.html load resolves —
+		// if the immediate 0ms fallback below ran first (a near-certainty, since that's a
+		// synchronous same-tick timer racing a page load) and stripped the listeners as a
+		// "one-shot" cleanup, Obsidian's real, later .show() call would sail through
+		// unguarded and the picker would stay fully visible (observed regression). The
+		// listeners cost nothing extra: they're released together with the window on close.
+		const hidePicker = () => {
+			// Positive identification by loaded URL (see method comment):
+			//   null  → URL unreadable through this remote bridge → fall back to the
+			//           hidden-state gate alone (hide + skip-taskbar, pre-fix behavior).
+			//   ""    → not loaded yet → identity unknown; hiding is a harmless no-op (a
+			//           window can't be visible before its load resolves) but don't
+			//           skip-taskbar a window we haven't identified.
+			//   other → starter.html = the picker (hide it); anything else = a legitimate
+			//           window — permanently spare it.
+			let url: string | null = null;
+			try {
+				const u = w.webContents?.getURL();
+				if (typeof u === "string") url = u;
+			} catch {
+				/* URL unreadable — fall back to hidden-state gate alone */
+			}
+			if (url !== null && url !== "") {
+				if (!url.toLowerCase().includes("starter")) return;
+			}
+			try {
+				if (!w.isDestroyed()) w.hide();
+			} catch {
+				/* ignore hide failure */
+			}
+			if (url === "") return; // identity still unknown — don't skip-taskbar yet
+			try {
+				if (!w.isDestroyed()) w.setSkipTaskbar(true);
+			} catch {
+				/* unsupported on some platforms/windows */
+			}
+		};
+		try {
+			w.on("ready-to-show", hidePicker);
+		} catch {
+			/* event not supported */
+		}
+		try {
+			w.on("show", hidePicker);
+		} catch {
+			/* event not supported */
+		}
+		window.setTimeout(hidePicker, 0);
+		window.setTimeout(() => {
+			try {
+				const win = this.win;
+				if (!this.remote || !win || win.isDestroyed()) return;
+				hidePicker();
+				this.showWindow();
+			} catch {
+				/* ignore window restore failure */
+			}
+		}, 150);
+	}
+
+	private removeSingleInstance() {
+		// Fenced as a whole: this also runs mid-onunload (and as the duplicate-registration
+		// guard), where a throw from a torn-down remote bridge would otherwise abort the rest
+		// of the cleanup chain (tray/socket teardown).
+		try {
+			const app = this.remote?.app;
+			if (app) {
+				try {
+					if (this.secondInstanceHandler)
+						app.removeListener(
+							"second-instance",
+							this.secondInstanceHandler
+						);
+				} catch {
+					/* already removed */
+				}
+				try {
+					if (this.windowCreatedHandler)
+						app.removeListener(
+							"browser-window-created",
+							this.windowCreatedHandler
+						);
+				} catch {
+					/* already removed */
+				}
+			}
+		} catch (e) {
+			console.error("Still Running: single-instance cleanup failed", e);
 		}
 		this.secondInstanceHandler = null;
 		this.windowCreatedHandler = null;
-		if (this.awaitingPickerTimer) {
-			clearTimeout(this.awaitingPickerTimer);
-			this.awaitingPickerTimer = null;
+		if (this.hiddenAtRelaunchStartTimer) {
+			clearTimeout(this.hiddenAtRelaunchStartTimer);
+			this.hiddenAtRelaunchStartTimer = null;
 		}
-		this.awaitingPickerWindow = false;
+		this.hiddenAtRelaunchStart = false;
 	}
 
 	// ── Tray ───────────────────────────────────────────────────────
@@ -910,12 +1051,25 @@ export default class BackgroundTrayPlugin extends Plugin {
 	quitCompletely() {
 		this.reallyQuitting = true;
 		try {
-			if (this.win) this.win.close();
-			else this.remote?.app?.quit();
+			const app = this.remote?.app;
+			if (app) {
+				// app.quit() (not win.close()) — closing only our own window isn't enough
+				// to actually exit. interceptPossiblePickerWindow() deliberately leaves a
+				// suppressed relaunch vault-picker window alive-but-hidden (closing it risks
+				// the window-all-closed regression, see that method's comment), so if one is
+				// currently sitting hidden, win.close() alone leaves it as the last open
+				// window and the process never reaches window-all-closed — a zombie process
+				// with no visible window (observed regression, required a manual kill).
+				// app.quit() tears down every window, including that one.
+				app.quit();
+			} else if (this.win) {
+				this.win.close();
+			}
 		} catch (e) {
 			console.error("Still Running: quit failed", e);
 			try {
-				this.remote?.app?.quit();
+				if (this.win) this.win.close();
+				else this.remote?.app?.quit();
 			} catch {
 				// Neither path could quit — reset so future closes still hide to tray
 				// instead of leaving reallyQuitting stuck true forever.

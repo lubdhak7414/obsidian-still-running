@@ -1,20 +1,22 @@
-![Still Running — keep Obsidian in the system tray](assets/banner.jpg)
-
 # Still Running
 
 Keep Obsidian running in the system tray instead of quitting when you close the window.
 
-**One job, done well.** Still Running is intentionally tiny and single-purpose — close-to-tray and a tray icon, nothing else. No background services, no extra UI, no bloat. Turn it off and Obsidian behaves exactly as before.
+Closing the window hides Obsidian to the tray instead of killing the process, so Sync (and anything else running in the background) doesn't pause every time you close a window. Single-purpose: a tray icon and close-to-tray, nothing else. Turn it off and Obsidian behaves exactly as before.
 
-A robust, modern reimplementation of the (now unmaintained) `obsidian-tray`, built for Obsidian / Electron in 2026. Originally forked from Synaphi's `background-tray`.
+Started as a fork of Synaphi's `background-tray`, since rewritten to actually hold up against modern Obsidian/Electron builds — see [why this is different](#why-this-is-different) below.
 
 > Desktop only. Windows and macOS are fully supported. Linux tray behaviour depends on your desktop environment and is best-effort.
 
-## Why keep Obsidian in the tray?
+## Why this is different
 
-- **Sync keeps working in the background.** Because Obsidian stays running when you close the window, Obsidian Sync (and any other background sync) keeps going on its own instead of pausing until you reopen the app. Close the window, walk away — your vault stays up to date.
-- **Instant reopen.** Bringing Obsidian back from the tray is immediate — no cold start, no vault picker.
-- **Lightweight.** It just keeps the window alive in the tray; it adds no measurable overhead.
+Most tray plugins in this space (including the unmaintained `obsidian-tray`) rely on a single `preventDefault()` call on window close and call it done. On current Electron builds that call is unreliable on its own, so the window quietly slips through and quits anyway. Still Running intercepts close on two independent layers — a renderer-side `beforeunload` handler as the primary defense, plus the Electron-level `close` event as a fallback — so it holds up even where a single hook silently doesn't.
+
+Relaunching Obsidian while it's hidden in the tray normally pops up the vault picker instead of just showing your existing window — mildly annoying if you rely on the tray as a fast toggle. This plugin restores the existing window and suppresses that picker, without triggering Electron's `window-all-closed` quit path in the process (an easy way to accidentally kill the whole app instead of restoring it).
+
+Everything is also wrapped in isolated `try`/`catch`, so a failure in one feature — one Electron API a given version doesn't support the way we expect — degrades to a no-op instead of taking the tray icon or close-to-tray down with it.
+
+No settings sprawl, no background services beyond an optional local socket for global-hotkey support, and disabling the plugin reverts every listener it registered.
 
 ## Features
 
