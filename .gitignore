@@ -18,6 +18,8 @@ Thumbs.db
 *.tgz
 data.json
 
-# Docs - keep only README.md tracked
+# Docs - allow test procedure and contributing docs
 *.md
 !README.md
+!test-procedure.md
+!CONTRIBUTING.md
