@@ -1280,6 +1280,10 @@ export default class BackgroundTrayPlugin extends Plugin {
 			} catch {
 				// Neither path could quit - reset so future closes still hide to tray
 				// instead of leaving reallyQuitting stuck true forever.
+				if (this.reallyQuittingResetTimer) {
+					clearTimeout(this.reallyQuittingResetTimer);
+					this.reallyQuittingResetTimer = null;
+				}
 				this.reallyQuitting = false;
 			}
 		}
@@ -1289,6 +1293,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 		const app = this.remote?.app;
 		if (!app) return;
 		this.reallyQuitting = true;
+		this.scheduleReallyQuittingReset();
 		try {
 			app.relaunch();
 			// app.quit() (not exit()) so Obsidian gets its normal graceful-shutdown path
@@ -1299,15 +1304,17 @@ export default class BackgroundTrayPlugin extends Plugin {
 			console.error("Still Running: relaunch failed", e);
 			// Relaunch did not happen - reset so the next window close still
 			// hides to tray instead of quitting the app.
+			if (this.reallyQuittingResetTimer) {
+				clearTimeout(this.reallyQuittingResetTimer);
+				this.reallyQuittingResetTimer = null;
+			}
 			this.reallyQuitting = false;
 		}
 	}
 
 	async loadSettings() {
-		const data = (await this.loadData()) as
-			| Partial<BackgroundTraySettings>
-			| null;
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, data ?? {});
+		const data = (await this.loadData()) as unknown;
+		this.settings = sanitizeSettings(data);
 	}
 
 	async saveSettings() {
@@ -1319,6 +1326,15 @@ export default class BackgroundTrayPlugin extends Plugin {
 		this.destroyTray();
 		if (this.remote && this.settings.createTrayIcon)
 			await this.createTray();
+	}
+
+	async refreshMinimizeInterception() {
+		this.removeMinimizeInterception();
+		if (this.settings.minimizeToTray) this.registerMinimizeInterception();
+	}
+
+	async refreshGlobalShortcut() {
+		this.updateGlobalShortcut();
 	}
 }
 
@@ -1359,6 +1375,38 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Minimize to tray")
+			.setDesc("Minimize button hides to tray instead of minimizing to taskbar/dock.")
+			.addToggle((t) =>
+				t
+					.setValue(this.plugin.settings.minimizeToTray)
+					.onChange(async (v) => {
+						this.plugin.settings.minimizeToTray = v;
+						await this.plugin.saveSettings();
+						await this.plugin.refreshMinimizeInterception();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Hide dock icon when hidden (macOS)")
+			.setDesc("On macOS, hide the dock icon when the window is hidden to tray. Has no effect on other platforms.")
+			.addToggle((t) =>
+				t
+					.setValue(this.plugin.settings.hideDockIcon)
+					.onChange(async (v) => {
+						this.plugin.settings.hideDockIcon = v;
+						await this.plugin.saveSettings();
+						// Update dock visibility immediately based on current window state
+						try {
+							const visible = this.plugin["win"] ? (this.plugin["win"] as ElectronWindow).isVisible() : true;
+							(this.plugin as unknown as { updateDockVisibility: (b: boolean) => void }).updateDockVisibility(visible);
+						} catch {
+							/* ignore */
+						}
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Create tray icon")
 			.setDesc("Create an icon in the system tray. (Left-click: toggle show/hide)")
 			.addToggle((t) =>
@@ -1395,8 +1443,20 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 					.setPlaceholder("/path/to/icon.png")
 					.setValue(this.plugin.settings.trayIconPath)
 					.onChange(async (v) => {
-						this.plugin.settings.trayIconPath = v.trim();
+						const trimmed = v.trim();
+						this.plugin.settings.trayIconPath = trimmed;
 						await this.plugin.saveSettings();
+						// Immediate validation feedback
+						if (trimmed) {
+							try {
+								const fs = windowRequire("fs") as FsModule | null;
+								if (fs && !fs.existsSync(trimmed)) {
+									new Notice(`Still Running: Tray icon not found at "${trimmed}" - using fallback.`);
+								}
+							} catch {
+								/* ignore */
+							}
+						}
 						await this.plugin.refreshTray();
 					})
 			);
