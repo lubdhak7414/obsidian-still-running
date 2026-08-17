@@ -472,6 +472,104 @@ export default class BackgroundTrayPlugin extends Plugin {
 		this.closeHandler = null;
 	}
 
+	// ── Minimize to tray ─────────────────────────────────────────────────
+	private registerMinimizeInterception() {
+		const win = this.win;
+		if (!win) return;
+		this.removeMinimizeInterception();
+		if (!this.settings.minimizeToTray) return;
+		this.minimizeHandler = (e: ElectronEvent) => {
+			if (this.settings.minimizeToTray && !this.reallyQuitting) {
+				try {
+					e.preventDefault();
+				} catch {
+					/* some Electron builds don't support preventDefault on minimize */
+				}
+				try {
+					win.hide();
+					this.updateDockVisibility(false);
+				} catch {
+					/* ignore hide failure */
+				}
+			}
+		};
+		try {
+			win.on("minimize", this.minimizeHandler);
+		} catch (e) {
+			console.error("Still Running: failed to register minimize listener", e);
+			this.minimizeHandler = null;
+		}
+	}
+
+	private removeMinimizeInterception() {
+		if (this.win && this.minimizeHandler) {
+			try {
+				this.win.removeListener("minimize", this.minimizeHandler);
+			} catch {
+				/* already removed */
+			}
+		}
+		this.minimizeHandler = null;
+	}
+
+	private updateDockVisibility(visible: boolean) {
+		// Only relevant on macOS; no-op elsewhere
+		try {
+			if (visible) {
+				this.remote?.app?.dock?.show?.();
+			} else if (this.settings.hideDockIcon) {
+				// Hide dock icon only when window is hidden and user opted in
+				(this.remote?.app?.dock as unknown as { hide?: () => void })?.hide?.();
+			}
+		} catch {
+			/* dock not available */
+		}
+	}
+
+	private refreshTrayTooltip() {
+		if (!this.tray) return;
+		try {
+			this.tray.setToolTip(this.renderTooltip());
+		} catch {
+			/* ignore */
+		}
+	}
+
+	private updateGlobalShortcut() {
+		this.unregisterGlobalShortcut();
+		if (!this.settings.enableGlobalShortcut) return;
+		const gs = this.remote?.globalShortcut;
+		if (!gs) {
+			console.error("Still Running: globalShortcut not available in this build");
+			new Notice("Still Running: Global shortcut not available in this build.");
+			return;
+		}
+		const acc = this.settings.globalShortcutAccelerator.trim();
+		if (!acc) return;
+		try {
+			const ok = gs.register(acc, () => this.toggleWindow());
+			if (!ok) {
+				console.error("Still Running: globalShortcut register failed for", acc);
+				new Notice(`Still Running: Global shortcut "${acc}" failed to register (conflict?).`);
+			} else {
+				this.registeredGlobalShortcut = acc;
+			}
+		} catch (e) {
+			console.error("Still Running: globalShortcut register threw", e);
+			new Notice("Still Running: Failed to register global shortcut.");
+		}
+	}
+
+	private unregisterGlobalShortcut() {
+		if (!this.registeredGlobalShortcut) return;
+		try {
+			this.remote?.globalShortcut?.unregister(this.registeredGlobalShortcut);
+		} catch {
+			/* ignore */
+		}
+		this.registeredGlobalShortcut = null;
+	}
+
 	// ── Single-instance window focus ───────────────────────────────────────────
 	// When Obsidian is relaunched while hidden in the tray, Obsidian shows a vault selection
 	// dialog (observed). → We restore the existing window, then hide the newly created dialog
@@ -652,7 +750,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 			//           window can't be visible before its load resolves) but don't
 			//           skip-taskbar a window we haven't identified.
 			//   other → starter.html = the picker (hide it); anything else = a legitimate
-			//           window - permanently spare it.
+			//           window - permanently spare it and detach listeners to avoid leak.
 			let url: string | null = null;
 			try {
 				const u = w.webContents?.getURL();
@@ -661,7 +759,21 @@ export default class BackgroundTrayPlugin extends Plugin {
 				/* URL unreadable - fall back to hidden-state gate alone */
 			}
 			if (url !== null && url !== "") {
-				if (!url.toLowerCase().includes("starter")) return;
+				if (!url.toLowerCase().includes("starter")) {
+					// Legitimate window (e.g. another vault / popout) - detach so we don't
+					// keep checking a window we've permanently vetoed.
+					try {
+						w.removeListener("ready-to-show", hidePicker as ElectronListener);
+					} catch {
+						/* ignore */
+					}
+					try {
+						w.removeListener("show", hidePicker as ElectronListener);
+					} catch {
+						/* ignore */
+					}
+					return;
+				}
 			}
 			try {
 				if (!w.isDestroyed()) w.hide();
@@ -839,8 +951,11 @@ export default class BackgroundTrayPlugin extends Plugin {
 		const rawVault = this.app.vault.getName();
 		// Sanitizing collapses distinct vault names (e.g. "My Vault" and "My!Vault") to the
 		// same string - append a short hash of the raw name so they still get distinct paths.
-		const vault =
-			rawVault.replace(/[^a-zA-Z0-9_-]/g, "_") + "-" + fnv1aHex(rawVault);
+		// Truncate the sanitized base to 32 chars to keep the final Unix socket path under
+		// the ~107 byte limit (dir + prefix + vault ≈ 100). Without this, a 100-char vault
+		// name would overflow and listen() fails with EINVAL.
+		const sanitizedBase = rawVault.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32) || "vault";
+		const vault = sanitizedBase + "-" + fnv1aHex(rawVault);
 		if (process.platform === "win32") {
 			return `\\\\.\\pipe\\obsidian-still-running-${vault}`;
 		}
@@ -851,12 +966,18 @@ export default class BackgroundTrayPlugin extends Plugin {
 		// (predictable path there is squattable by another local user on multi-user Linux).
 		const runtimeDir = process.env?.XDG_RUNTIME_DIR;
 		const dir = runtimeDir && runtimeDir.length > 0 ? runtimeDir : os.tmpdir();
-		return path.join(dir, `obsidian-still-running-${vault}.sock`);
+		const full = path.join(dir, `obsidian-still-running-${vault}.sock`);
+		// Final safety: if the full path still exceeds the UDS limit (e.g. very long
+		// XDG_RUNTIME_DIR), fall back to hash-only name.
+		if (full.length > 100) {
+			return path.join(dir, `obsidian-still-running-${fnv1aHex(rawVault)}.sock`);
+		}
+		return full;
 	}
 
 	private async createIpcServer() {
 		if (!this.win) return;
-		this.destroyIpcServer(); // duplicate guard
+		await this.destroyIpcServer(); // duplicate guard (await ensures handle released before re-listen)
 		try {
 			const net = windowRequire("net") as NetModule | null;
 			const fs = windowRequire("fs") as FsModule | null;
@@ -890,7 +1011,12 @@ export default class BackgroundTrayPlugin extends Plugin {
 				socket.on("data", (chunk) => {
 					// Commands are a few bytes ("note"); cap buffering so a client that
 					// holds the connection open streaming data can't grow memory unbounded.
-					if (data.length < 256) data += chunk.toString();
+					// Slice per-chunk to strictly enforce 256 even if a single chunk is large
+					// or data arrives in multiple chunks ("no" + "te").
+					if (data.length < 256) {
+						const str = chunk.toString();
+						data += str.slice(0, 256 - data.length);
+					}
 				});
 				socket.on("end", () => {
 					clearTimeout(idleTimeout);
