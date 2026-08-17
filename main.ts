@@ -1504,27 +1504,51 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 					})
 			);
 
+		new Setting(containerEl)
+			.setName("New note filename")
+			.setDesc(
+				"Template for new note filenames (without .md). Supports {{date}} (YYYY-MM-DD), {{time}} (HHmmss), {{datetime}}, {{timestamp}}."
+			)
+			.addText((txt) =>
+				txt
+					.setPlaceholder("Untitled {{date}} {{time}}")
+					.setValue(this.plugin.settings.quickNoteFilenameTemplate)
+					.onChange(async (v) => {
+						const trimmed = v.trim() || DEFAULT_SETTINGS.quickNoteFilenameTemplate;
+						this.plugin.settings.quickNoteFilenameTemplate = trimmed;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		const socketPath = this.plugin.getSocketPath();
 		new Setting(containerEl)
 			.setName("Enable external toggle (advanced)")
 			.setDesc(
 				createFragment((frag) => {
-					if (this.plugin.settings.enableExternalToggle && socketPath) {
-						frag.appendText(
-							'Enabled - connect to the socket below to toggle Show/Hide, or send "note" to create a new note (for OS-level global hotkey integration). Click the copy icon to copy any line.'
-						);
-						appendCopyableCommand(frag, "Socket path:", socketPath);
-						const cmds = getExternalToggleCommands(socketPath);
-						appendCopyableCommand(
-							frag,
-							`Show/Hide (${cmds.label}):`,
-							cmds.show
-						);
-						appendCopyableCommand(
-							frag,
-							`New note (${cmds.label}):`,
-							cmds.note
-						);
+					if (this.plugin.settings.enableExternalToggle) {
+						if (socketPath) {
+							frag.appendText(
+								'Enabled - connect to the socket below to toggle Show/Hide, or send "note" to create a new note (for OS-level global hotkey integration). Click the copy icon to copy any line.'
+							);
+							appendCopyableCommand(frag, "Socket path:", socketPath);
+							const cmds = getExternalToggleCommands(socketPath);
+							appendCopyableCommand(
+								frag,
+								`Show/Hide (${cmds.label}):`,
+								cmds.show
+							);
+							appendCopyableCommand(
+								frag,
+								`New note (${cmds.label}):`,
+								cmds.note
+							);
+						} else {
+							frag.appendText(
+								"Enabled but socket path is unavailable on this platform/build (Node/Electron access missing). External toggle will not work."
+							);
+							frag.createEl("br");
+							frag.appendText("Check console for 'socket path calculation failed'.");
+						}
 					} else {
 						frag.appendText(
 							"Expose Show/Hide toggle (and new-note creation) via a local socket (Unix domain socket / Windows named pipe) to allow triggering from outside (e.g., OS global hotkeys)."
@@ -1548,5 +1572,38 @@ class BackgroundTraySettingTab extends PluginSettingTab {
 						this.display(); // refresh socket path display
 					})
 			);
+
+		new Setting(containerEl)
+			.setName("Enable global shortcut (advanced)")
+			.setDesc(
+				"Register an OS-wide global shortcut to toggle Show/Hide without needing an external tool (uses Electron globalShortcut). May conflict with other apps."
+			)
+			.addToggle((t) =>
+				t
+					.setValue(this.plugin.settings.enableGlobalShortcut)
+					.onChange(async (v) => {
+						this.plugin.settings.enableGlobalShortcut = v;
+						await this.plugin.saveSettings();
+						await this.plugin.refreshGlobalShortcut();
+						this.display();
+					})
+			);
+
+		if (this.plugin.settings.enableGlobalShortcut) {
+			new Setting(containerEl)
+				.setName("Global shortcut accelerator")
+				.setDesc("Electron accelerator string, e.g. Alt+Shift+O, Cmd+Shift+O, Ctrl+Alt+O. Restart may be needed on some platforms.")
+				.addText((txt) =>
+					txt
+						.setPlaceholder("Alt+Shift+O")
+						.setValue(this.plugin.settings.globalShortcutAccelerator)
+						.onChange(async (v) => {
+							const trimmed = v.trim() || DEFAULT_SETTINGS.globalShortcutAccelerator;
+							this.plugin.settings.globalShortcutAccelerator = trimmed;
+							await this.plugin.saveSettings();
+							await this.plugin.refreshGlobalShortcut();
+						})
+				);
+		}
 	}
 }
