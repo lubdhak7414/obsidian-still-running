@@ -1054,10 +1054,31 @@ export default class BackgroundTrayPlugin extends Plugin {
 					);
 				}
 			});
-			server.listen(socketPath);
-			// XDG_RUNTIME_DIR is already per-user (0700), but the os.tmpdir() fallback
-			// (e.g. no systemd, SSH sessions) is world-readable - restrict to the owner so
-			// another local user on a shared machine can't toggle the window / create notes.
+			// Restrict permissions at create time via umask when falling back to tmpdir
+			// (otherwise there's a TOCTOU window between listen() and chmodSync where the
+			// socket is world-readable). XDG_RUNTIME_DIR is already 0700, so no umask needed there.
+			let oldUmask: number | null = null;
+			const useUmask = process.platform !== "win32" && !process.env?.XDG_RUNTIME_DIR;
+			if (useUmask) {
+				try {
+					// 0o077 = only owner may read/write/exec; restores after listen()
+					oldUmask = (process as unknown as { umask(mask: number): number }).umask(0o077);
+				} catch {
+					/* umask not available in this env */
+				}
+			}
+			try {
+				server.listen(socketPath);
+			} finally {
+				if (oldUmask !== null) {
+					try {
+						(process as unknown as { umask(mask: number): number }).umask(oldUmask);
+					} catch {
+						/* ignore */
+					}
+				}
+			}
+			// Defense-in-depth chmod even after umask (covers XDG case + races)
 			if (process.platform !== "win32") {
 				try {
 					fs.chmodSync(socketPath, 0o600);
@@ -1075,29 +1096,50 @@ export default class BackgroundTrayPlugin extends Plugin {
 		}
 	}
 
-	private destroyIpcServer() {
+	private async destroyIpcServer(): Promise<void> {
+		const pathToClean = this.socketPath;
+		let closePromise: Promise<void> | null = null;
 		if (this.ipcServer) {
-			try {
-				this.ipcServer.close();
-			} catch {
-				/* already closed */
-			}
+			const srv = this.ipcServer;
+			this.ipcServer = null;
+			// net.Server.close() is async (callback on next tick). Awaiting it avoids
+			// EADDRINUSE when refreshIpcServer immediately re-listens on the same path.
+			closePromise = new Promise<void>((resolve) => {
+				let done = false;
+				const finish = () => {
+					if (!done) {
+						done = true;
+						resolve();
+					}
+				};
+				try {
+					srv.close(finish);
+				} catch {
+					finish();
+				}
+				// Safety: if close callback never fires (already closed), resolve shortly
+				setTimeout(finish, 80);
+			});
+		} else {
+			this.ipcServer = null;
 		}
-		this.ipcServer = null;
-		if (this.socketPath && process.platform !== "win32") {
+		// Unlink synchronously (before awaiting close) so onunload() that voids this
+		// still cleans the file immediately for smoke-test and for stale-socket recovery.
+		if (pathToClean && process.platform !== "win32") {
 			try {
 				const fs = windowRequire("fs") as FsModule | null;
-				if (fs?.existsSync(this.socketPath)) fs.unlinkSync(this.socketPath);
+				if (fs?.existsSync(pathToClean)) fs.unlinkSync(pathToClean);
 			} catch {
 				/* ignore cleanup failure */
 			}
 		}
 		this.socketPath = null;
+		if (closePromise) await closePromise;
 	}
 
 	// Re-open socket on settings change for immediate effect
 	async refreshIpcServer() {
-		this.destroyIpcServer();
+		await this.destroyIpcServer();
 		if (this.remote && this.win && this.settings.enableExternalToggle) {
 			await this.createIpcServer();
 		}
@@ -1110,6 +1152,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 		try {
 			if (win.isVisible() && !win.isMinimized()) {
 				win.hide();
+				this.updateDockVisibility(false);
 			} else {
 				this.showWindow();
 			}
@@ -1125,6 +1168,8 @@ export default class BackgroundTrayPlugin extends Plugin {
 			if (win.isMinimized()) win.restore();
 			win.show();
 			win.focus();
+			this.updateDockVisibility(true);
+			this.refreshTrayTooltip();
 		} catch {
 			/* ignore window restore failure */
 		}
@@ -1166,12 +1211,15 @@ export default class BackgroundTrayPlugin extends Plugin {
 				}
 			}
 
-			const stamp = moment().format("YYYY-MM-DD HHmmss");
+			// Filename from user-configurable template (supports {{date}}, {{time}}, etc.)
+			const rawTemplate = this.settings.quickNoteFilenameTemplate?.trim() || DEFAULT_SETTINGS.quickNoteFilenameTemplate;
+			const baseName = renderQuickNoteFilename(rawTemplate, moment());
 			let file = null;
 			// Two notes triggered within the same second would otherwise collide on the
 			// exact same filename; fall back to a numeric suffix like Obsidian itself does.
 			for (let suffix = 0; suffix < 100; suffix++) {
-				const filename = `Untitled ${stamp}${suffix ? ` (${suffix})` : ""}.md`;
+				const withSuffix = suffix ? `${baseName} (${suffix})` : baseName;
+				const filename = `${withSuffix}.md`;
 				const path = folder ? `${folder}/${filename}` : filename;
 				if (this.app.vault.getAbstractFileByPath(path)) continue;
 				try {
@@ -1194,8 +1242,21 @@ export default class BackgroundTrayPlugin extends Plugin {
 		}
 	}
 
+	private scheduleReallyQuittingReset() {
+		if (this.reallyQuittingResetTimer) clearTimeout(this.reallyQuittingResetTimer);
+		// If quit/relaunch is vetoed silently (no throw) the app stays alive but
+		// reallyQuitting would remain true forever, breaking hide-to-tray. This
+		// safety net restores interception after a few seconds if the process
+		// hasn't actually exited.
+		this.reallyQuittingResetTimer = setTimeout(() => {
+			this.reallyQuitting = false;
+			this.reallyQuittingResetTimer = null;
+		}, 4000);
+	}
+
 	quitCompletely() {
 		this.reallyQuitting = true;
+		this.scheduleReallyQuittingReset();
 		try {
 			const app = this.remote?.app;
 			if (app) {
