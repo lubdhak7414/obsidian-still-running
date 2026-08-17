@@ -9,6 +9,12 @@ import {
 	Setting,
 	TFile,
 } from "obsidian";
+import {
+	BackgroundTraySettings,
+	DEFAULT_SETTINGS,
+	sanitizeSettings,
+	renderQuickNoteFilename,
+} from "./src/settings";
 
 /*
  * Still Running - keep Obsidian running in the system tray instead of quitting.
@@ -45,14 +51,17 @@ interface ElectronWindow {
 	show(): void;
 	focus(): void;
 	restore(): void;
+	minimize(): void;
 	close(): void;
 	isVisible(): boolean;
 	isMinimized(): boolean;
 	isDestroyed(): boolean;
 	setSkipTaskbar(skip: boolean): void;
 	on(event: "close", listener: (e: ElectronEvent) => void): void;
+	on(event: "minimize", listener: (e: ElectronEvent) => void): void;
 	on(event: "ready-to-show" | "show", listener: () => void): void;
 	removeListener(event: "close", listener: ElectronListener): void;
+	removeListener(event: "minimize", listener: ElectronListener): void;
 	removeListener(event: "ready-to-show" | "show", listener: () => void): void;
 }
 
@@ -95,6 +104,12 @@ interface ElectronRemote {
 		createFromPath(path: string): NativeImageLike;
 		createFromDataURL(dataUrl: string): NativeImageLike;
 	};
+	globalShortcut?: {
+		register(accelerator: string, callback: () => void): boolean;
+		unregister(accelerator: string): void;
+		unregisterAll(): void;
+		isRegistered(accelerator: string): boolean;
+	};
 }
 
 // ── Node built-in modules (local socket for external toggle) minimal types ──────────────────
@@ -108,7 +123,7 @@ interface NetSocket {
 
 interface NetServer {
 	listen(path: string): void;
-	close(): void;
+	close(callback?: () => void): void;
 	on(event: "error", listener: (err: Error) => void): void;
 }
 
@@ -129,30 +144,6 @@ interface OsModule {
 interface PathModule {
 	join(...parts: string[]): string;
 }
-
-interface BackgroundTraySettings {
-	runInBackground: boolean;
-	createTrayIcon: boolean;
-	focusOnRelaunch: boolean;
-	trayIconPath: string;
-	trayTooltip: string;
-	enableExternalToggle: boolean;
-	startMinimized: boolean;
-	quickNoteFolder: string;
-	quickNoteTemplatePath: string;
-}
-
-const DEFAULT_SETTINGS: BackgroundTraySettings = {
-	runInBackground: true,
-	createTrayIcon: true,
-	focusOnRelaunch: true,
-	trayIconPath: "",
-	trayTooltip: "{{vault}} - Still Running",
-	enableExternalToggle: false,
-	startMinimized: false,
-	quickNoteFolder: "",
-	quickNoteTemplatePath: "",
-};
 
 // Load Node/Electron main process modules from the renderer.
 // Use window.require instead of require() literals to avoid static import rules.
@@ -271,6 +262,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 		| ((event: ElectronEvent, w: ElectronWindow) => void)
 		| null = null;
 	private reallyQuitting = false;
+	private reallyQuittingResetTimer: ReturnType<typeof setTimeout> | null = null;
 	private trayEpoch = 0;
 	// Set by the "close" event, which Electron always fires before "beforeunload" for a
 	// real window close (and never fires for webContents.reload()). Gates beforeunload so
