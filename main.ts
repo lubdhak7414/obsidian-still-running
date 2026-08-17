@@ -274,6 +274,8 @@ export default class BackgroundTrayPlugin extends Plugin {
 		null;
 	private ipcServer: NetServer | null = null;
 	private socketPath: string | null = null;
+	private minimizeHandler: ((e: ElectronEvent) => void) | null = null;
+	private registeredGlobalShortcut: string | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -301,6 +303,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 		//       preventDefault is observed to be ignored (see 01. Spec §3.1·§3.3) → beforeunload is the actual mechanism.
 		this.registerBeforeUnload();
 		this.registerCloseInterception();
+		this.registerMinimizeInterception();
 
 		if (this.settings.createTrayIcon) await this.createTray();
 		if (this.settings.enableExternalToggle) await this.createIpcServer();
@@ -322,13 +325,29 @@ export default class BackgroundTrayPlugin extends Plugin {
 		if (this.settings.startMinimized) {
 			try {
 				this.win?.hide();
+				this.updateDockVisibility(false);
 			} catch (e) {
 				console.error("Still Running: startMinimized hide failed", e);
 			}
 		}
 
-		// Maintain single purpose: do not register command palette / hotkey shortcuts.
-		// (All actions are provided via tray icon and right-click menu - Show/Hide, Relaunch, Quit.)
+		this.updateGlobalShortcut();
+
+		// Keep tray tooltip in sync if vault is renamed (rare, but vault.getName() is live)
+		try {
+			// @ts-ignore - vault rename event not in public types but fired in some Obsidian builds
+			if (typeof this.app.vault.on === "function") {
+				// Use any to avoid strict typing on vault events
+				const vaultAny = this.app.vault as unknown as { on: (ev: string, cb: () => void) => { unload: () => void } };
+				// Best-effort: file rename fires often; throttled tooltip refresh is cheap
+				this.registerEvent(
+					vaultAny.on("rename", () => this.refreshTrayTooltip()) as unknown as Parameters<Plugin["registerEvent"]>[0]
+				);
+			}
+		} catch {
+			/* ignore */
+		}
+
 		this.addSettingTab(new BackgroundTraySettingTab(this.app, this));
 	}
 
@@ -336,9 +355,16 @@ export default class BackgroundTrayPlugin extends Plugin {
 		// 01. Spec §3.4 cleanup checklist - when disabled, behavior 100% reverts.
 		this.removeBeforeUnload();
 		this.removeCloseInterception();
+		this.removeMinimizeInterception();
 		this.removeSingleInstance();
 		this.destroyTray();
-		this.destroyIpcServer();
+		void this.destroyIpcServer();
+		this.unregisterGlobalShortcut();
+		if (this.reallyQuittingResetTimer) {
+			clearTimeout(this.reallyQuittingResetTimer);
+			this.reallyQuittingResetTimer = null;
+		}
+		this.reallyQuitting = false;
 		try {
 			this.win?.setSkipTaskbar(false);
 		} catch {
@@ -377,6 +403,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 				(e as { returnValue: boolean }).returnValue = false;
 				try {
 					this.win?.hide(); // hide to tray
+					this.updateDockVisibility(false);
 				} catch {
 					/* ignore hide failure */
 				}
@@ -420,6 +447,7 @@ export default class BackgroundTrayPlugin extends Plugin {
 				e.preventDefault();
 				try {
 					win.hide();
+					this.updateDockVisibility(false);
 				} catch {
 					/* ignore hide failure */
 				}
