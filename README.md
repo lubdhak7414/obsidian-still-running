@@ -21,13 +21,17 @@ No settings sprawl, no background services beyond an optional local socket for g
 ## Features
 
 - **Run in background** - closing the window (X) hides Obsidian to the tray instead of quitting.
+- **Minimize to tray (optional)** - minimize button also hides to tray.
+- **Start minimized** - launch hidden in tray.
+- **Hide dock icon (macOS, optional)** - hide dock icon while hidden.
 - **Tray icon** - left-click toggles show/hide; right-click menu: Show/Hide, New note, Relaunch, Quit completely. Uses Obsidian's own app icon by default.
-- **New note from the tray** - creates a note (optionally from a template, in a configured folder) and opens it. Also triggerable over the external toggle socket (see below), so it can be bound to a global keyboard shortcut.
+- **New note from the tray** - creates a note (optionally from a template, in a configured folder, with customizable filename `{{date}}`/`{{time}}`) and opens it. Also triggerable over the external toggle socket (see below), so it can be bound to a global keyboard shortcut.
 - **Single-instance focus** - relaunching Obsidian while it's hidden in the tray restores the existing window instead of opening the vault switcher. (Toggle in settings.)
 - **Quit completely / Relaunch** - from the tray icon's right-click menu.
-- **Custom tray icon & tooltip** - `{{vault}}` is replaced with the vault name.
+- **Custom tray icon & tooltip** - `{{vault}}` is replaced with the vault name; tooltip updates live on vault rename.
 - **External toggle (optional)** - expose Show/Hide over a local socket so an OS-level global keyboard shortcut can bring Obsidian back without touching the mouse.  
   See [below](#show--hide-or-create-a-note-with-a-global-keyboard-shortcut).
+- **Native global shortcut (optional)** - register an OS-wide shortcut directly via Electron (`Alt+Shift+O` by default) without external tools.
 - Turning the plugin off restores all default behaviour completely (no leftover listeners).
 
 ## Install
@@ -46,7 +50,13 @@ Close the window and Obsidian keeps running in the tray - and so does your sync.
 
 ## Show / hide (or create a note) with a global keyboard shortcut
 
-The tray icon works with a mouse, but the plugin can also expose Show/Hide - and quick note creation - over a local socket (Settings → Still Running → **Enable external toggle**), so either can be bound to an OS-level global hotkey instead. Any tool that can run a shell command on a hotkey works. Connecting to the socket and closing it with no data toggles Show/Hide; sending the text `note` instead creates a new note (see **New note folder** / **New note template** in settings) and shows the window.
+The tray icon works with a mouse, but the plugin can also expose Show/Hide - and quick note creation - over a local socket (Settings → Still Running → **Enable external toggle**) or a native Electron global shortcut (Settings → **Enable global shortcut**), so either can be bound to an OS-level global hotkey. Any tool that can run a shell command on a hotkey works. Connecting to the socket and closing it with no data toggles Show/Hide; sending the text `note` instead creates a new note (see **New note folder** / **New note template** / **New note filename** in settings) and shows the window.
+
+### Native global shortcut (simplest)
+
+Enable **Enable global shortcut** in Settings → Still Running and set the accelerator (default `Alt+Shift+O` on Linux/Windows, `Cmd+Shift+O` on macOS also works). No external tool needed - Electron registers it OS-wide. If registration fails (conflict), check console for `Still Running: globalShortcut register failed`.
+
+### External toggle via socket (advanced, for custom tools)
 
 ### Linux
 
