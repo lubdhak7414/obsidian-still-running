@@ -26,6 +26,9 @@ jobs:
           npm install
           npm run build
 
+      - name: Smoke test
+        run: node smoke.cjs
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
