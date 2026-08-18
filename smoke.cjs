@@ -14,7 +14,12 @@ class PluginSettingTab { constructor(app,plugin){ this.app=app; this.plugin=plug
 let lastSettings=[];
 class Setting { constructor(containerEl){ this.containerEl=containerEl; lastSettings.push(this); } setName(n){this.name=n;return this;} setDesc(d){this.desc=d;return this;} addToggle(cb){cb({setValue(){return this;},onChange(){return this;}});return this;} addText(cb){cb({setPlaceholder(){return this;},setValue(){return this;},onChange(){return this;}});return this;} }
 let notices=[]; class Notice { constructor(m){ notices.push(m); } }
-const moment = () => ({ format(){ return "2026-01-01 000000"; } });
+const moment = () => ({ format(fmt){
+  if (fmt === "YYYY-MM-DD") return "2026-01-01";
+  if (fmt === "HHmmss") return "000000";
+  if (fmt === "YYYY-MM-DD HHmmss") return "2026-01-01 000000";
+  return "2026-01-01 000000";
+} });
 class TFile { constructor(path){ this.path=path; } }
 // Minimal fake DocumentFragment/HTMLElement supporting the subset of the real Obsidian API
 // main.ts uses (appendText/createEl, nestable - real Obsidian augments HTMLElement.prototype
@@ -77,8 +82,16 @@ const Menu = { buildFromTemplate(t){ return {_t:t}; } };
 const nativeImage = { createFromPath(){ return {isEmpty(){return true;}}; }, createFromDataURL(){ return {isEmpty(){return false;}}; }, createEmpty(){ return {}; } };
 // app (main process) event registry - for validating single-instance (relaunch) paths.
 const appEvents = {};
-const remoteStub = { getCurrentWindow(){ return fakeWin; }, Tray, Menu, nativeImage, app:{
-  quit(){log.quit++; log.appQuit++;}, relaunch(){}, exit(){}, dock:{show(){}},
+const gsLog = { registered: null, unregistered: [] };
+const remoteStub = { getCurrentWindow(){ return fakeWin; }, Tray, Menu, nativeImage,
+  globalShortcut: {
+    register(acc, cb){ gsLog.registered = acc; log.gsRegistered = acc; return true; },
+    unregister(acc){ gsLog.unregistered.push(acc); },
+    unregisterAll(){ gsLog.registered = null; },
+    isRegistered(acc){ return gsLog.registered === acc; },
+  },
+  app:{
+  quit(){log.quit++; log.appQuit++;}, relaunch(){}, exit(){}, dock:{show(){}, hide(){}},
   async getFileIcon(){ return {isEmpty(){return true;}}; },
   prependListener(ev,fn){ (appEvents[ev]=appEvents[ev]||[]).unshift(fn); },
   on(ev,fn){ (appEvents[ev]=appEvents[ev]||[]).push(fn); },
@@ -473,6 +486,75 @@ const STARTER_URL = "app://obsidian.md/starter.html";
     ok((codeEls[1].tag==="pre") === (process.platform==="win32"), "settings: multi-line (Windows) commands render as <pre> so newlines survive, single-line ones as <code>");
   }
   pSettingsOn.onunload();
+
+  // ── New features: minimize to tray ──
+  const pMin = new PluginClass(app, { id:"obsidian-still-running" });
+  pMin._data = { minimizeToTray: true };
+  await pMin.onload();
+  ok((log.listeners["minimize"]||[]).length===1, "minimizeToTray: minimize listener registered when enabled");
+  // simulate minimize event -> should hide to tray
+  fakeWin._visible = true;
+  const hiddenBeforeMin = log.hidden;
+  (log.listeners["minimize"]||[]).forEach(fn=>fn({preventDefault(){}}));
+  ok(log.hidden > hiddenBeforeMin && fakeWin._visible===false, "minimizeToTray: minimize hides window");
+  pMin.onunload();
+  ok((log.listeners["minimize"]||[]).length===0, "minimizeToTray: listener removed on unload");
+  // disabled case: no listener
+  const pMinOff = new PluginClass(app, { id:"obsidian-still-running" });
+  pMinOff._data = { minimizeToTray: false };
+  await pMinOff.onload();
+  ok((log.listeners["minimize"]||[]).length===0, "minimizeToTray: no listener when disabled");
+  pMinOff.onunload();
+
+  // ── New features: quick note filename template ──
+  const pTpl = new PluginClass(app, { id:"obsidian-still-running" });
+  pTpl._data = { quickNoteFilenameTemplate: "Note {{date}}" };
+  await pTpl.onload();
+  vaultFiles.clear();
+  await pTpl.createQuickNote();
+  ok([...vaultFiles.keys()].some(k=>k.includes("Note 2026-01-01")), "quickNote filename template: {{date}} rendered");
+  vaultFiles.clear();
+  pTpl.settings.quickNoteFilenameTemplate = "Bad/Name\\Test";
+  await pTpl.createQuickNote();
+  ok([...vaultFiles.keys()].some(k=>k.includes("Bad-Name-Test")), "quickNote filename template: slashes sanitized to '-'");
+  pTpl.onunload();
+
+  // ── New features: global shortcut ──
+  const pGS = new PluginClass(app, { id:"obsidian-still-running" });
+  pGS._data = { enableGlobalShortcut: true, globalShortcutAccelerator: "Alt+Shift+O" };
+  await pGS.onload();
+  ok(gsLog.registered === "Alt+Shift+O", "globalShortcut: registered when enabled");
+  pGS.onunload();
+  ok(gsLog.unregistered.includes("Alt+Shift+O"), "globalShortcut: unregistered on unload");
+  const pGSOff = new PluginClass(app, { id:"obsidian-still-running" });
+  pGSOff._data = { enableGlobalShortcut: false };
+  await pGSOff.onload();
+  gsLog.registered = null;
+  ok(gsLog.registered === null, "globalShortcut: not registered when disabled");
+  pGSOff.onunload();
+
+  // ── New features: sanitizeSettings robustness ──
+  const pSan = new PluginClass(app, { id:"obsidian-still-running" });
+  pSan._data = { runInBackground: "notabool", trayTooltip: 123, quickNoteFilenameTemplate: "" };
+  await pSan.onload();
+  ok(pSan.settings.runInBackground === true, "sanitize: wrong type for runInBackground falls back to default");
+  ok(pSan.settings.trayTooltip === "{{vault}} - Still Running", "sanitize: wrong type for trayTooltip falls back");
+  ok(pSan.settings.quickNoteFilenameTemplate === "Untitled {{date}} {{time}}", "sanitize: empty filename template falls back");
+  pSan.onunload();
+
+  // ── New features: socket path truncation ──
+  const pLong = new PluginClass(app, { id:"obsidian-still-running" });
+  const longName = "A".repeat(150);
+  const origGetName = fakeVault.getName;
+  fakeVault.getName = () => longName;
+  const sockLong = pLong.getSocketPath();
+  ok(sockLong.length <= 110, "socket path truncation: long vault name stays under limit");
+  // two similar long names should still be distinct due to hash
+  fakeVault.getName = () => longName + "!";
+  const sockLong2 = pLong.getSocketPath();
+  ok(sockLong !== sockLong2, "socket path truncation: similar long names still distinct (hash)");
+  fakeVault.getName = origGetName;
+  pLong.onunload();
 
   console.log(fail===0 ? "\nALL PASS" : `\n${fail} FAIL`);
   process.exit(fail===0?0:1);
