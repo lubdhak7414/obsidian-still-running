@@ -1,8 +1,8 @@
 {
 	"id": "obsidian-still-running",
 	"name": "Still Running",
-	"version": "0.9.0",
-	"minAppVersion": "1.4.0",
+	"version": "0.10.0",
+	"minAppVersion": "1.6.0",
 	"description": "Keep running in the system tray instead of quitting when you close the window.",
 	"author": "Safwan Usaid Lubdhak",
 	"authorUrl": "https://github.com/lubdhak7414",
