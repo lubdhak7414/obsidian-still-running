@@ -911,7 +911,8 @@ export default class BackgroundTrayPlugin extends Plugin {
 			}
 		}
 		// 2) Extract icon from actual Obsidian executable at runtime (no bundling needed)
-		if (!icon) {
+		// On KDE Wayland the live icon (even 32→22 file-backed) still shows “?” — prefer the known-good 22px cube fallback on Linux.
+		if (!icon && !Platform.isLinux) {
 			try {
 				const img = await app.getFileIcon(process.execPath, {
 					size: "normal",
