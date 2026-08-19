@@ -893,18 +893,19 @@ export default class BackgroundTrayPlugin extends Plugin {
 	}
 
 	// Resolve tray icon: custom path → actual Obsidian app icon → fallback, always resized to 22px for KDE/Wayland.
+	// KDE Wayland's StatusNotifierItem shows “?” for dataURL/getFileIcon bitmaps, but file-backed createFromPath works.
 	private async resolveTrayIcon(
 		remote: ElectronRemote
 	): Promise<NativeImageLike> {
 		const { nativeImage, app } = remote;
 		let icon: NativeImageLike | null = null;
-		// 1) User-specified path
+		// 1) User-specified path (already file-backed)
 		if (this.settings.trayIconPath) {
 			try {
 				const c = nativeImage.createFromPath(
 					this.settings.trayIconPath
 				);
-				if (!c.isEmpty()) icon = c;
+				if (!c.isEmpty()) return this.toFileBackedIcon(c, nativeImage);
 			} catch {
 				/* invalid path → try next candidate */
 			}
@@ -920,24 +921,63 @@ export default class BackgroundTrayPlugin extends Plugin {
 				/* icon extraction failed → fallback */
 			}
 		}
-		// 3) Last-resort fallback (now 22x22, not 64x64 which is empty on KDE Wayland)
+		// 3) Last-resort fallback (now 22x22, not 64x64 which is empty on KDE Wayland) - write to file for KDE
 		if (!icon || icon.isEmpty()) {
+			try {
+				const fs = windowRequire("fs") as unknown as { writeFileSync?: (p: string, d: Buffer) => void } | null;
+				const os = windowRequire("os") as OsModule | null;
+				const pathMod = windowRequire("path") as PathModule | null;
+				if (fs?.writeFileSync && os && pathMod) {
+					const b64 = DEFAULT_TRAY_ICON.split(",")[1] ?? "";
+					// Buffer is global in Electron renderer (Node)
+					const buf = (globalThis as unknown as { Buffer?: { from(s: string, enc: string): Buffer } }).Buffer?.from(b64, "base64");
+					if (buf) {
+						const file = pathMod.join(os.tmpdir(), "still-running-fallback-22.png");
+						try { fs.writeFileSync(file, buf); } catch {}
+						const fileImg = nativeImage.createFromPath(file);
+						if (!fileImg.isEmpty()) return fileImg;
+					}
+				}
+			} catch {}
 			icon = nativeImage.createFromDataURL(DEFAULT_TRAY_ICON);
 		}
-		// KDE tray is picky: resize any non-22px icon to 22px to avoid “?” placeholder on Wayland
+		// KDE tray is picky: resize any non-22px icon to 22px and force file-backed to avoid “?” placeholder on Wayland
 		try {
-			const anyIcon = icon as unknown as { getSize?: () => { width: number; height: number }; resize?: (o: { width: number; height: number }) => NativeImageLike };
+			const anyIcon = icon as unknown as { getSize?: () => { width: number; height: number }; resize?: (o: { width: number; height: number }) => NativeImageLike; toPNG?: () => Buffer };
 			if (icon && !icon.isEmpty() && anyIcon.resize && anyIcon.getSize) {
 				const s = anyIcon.getSize();
+				let target: NativeImageLike = icon;
 				if (s.width !== 22 || s.height !== 22) {
 					const resized = anyIcon.resize({ width: 22, height: 22 });
-					if (!resized.isEmpty()) return resized;
+					if (!resized.isEmpty()) target = resized;
 				}
+				// Force file-backed on KDE/Wayland
+				const fileBacked = this.toFileBackedIcon(target, nativeImage);
+				if (!fileBacked.isEmpty()) return fileBacked;
+				return target;
 			}
 		} catch {
 			/* resize not available */
 		}
 		return icon!;
+	}
+
+	private toFileBackedIcon(icon: NativeImageLike, nativeImage: ElectronRemote["nativeImage"]): NativeImageLike {
+		try {
+			const fs = windowRequire("fs") as unknown as { writeFileSync?: (p: string, d: Buffer) => void } | null;
+			const os = windowRequire("os") as OsModule | null;
+			const pathMod = windowRequire("path") as PathModule | null;
+			const anyIcon = icon as unknown as { toPNG?: () => Buffer };
+			if (!fs?.writeFileSync || !os || !pathMod || !anyIcon.toPNG) return icon;
+			const buf = anyIcon.toPNG();
+			if (!buf || buf.length === 0) return icon;
+			const file = pathMod.join(os.tmpdir(), `still-running-icon-${fnv1aHex("icon")}.png`);
+			try { fs.writeFileSync(file, buf); } catch { return icon; }
+			const fileImg = nativeImage.createFromPath(file);
+			return fileImg.isEmpty() ? icon : fileImg;
+		} catch {
+			return icon;
+		}
 	}
 
 	private destroyTray() {
