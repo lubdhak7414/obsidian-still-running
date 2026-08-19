@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-still-running",
-	"version": "0.10.2",
+	"version": "0.10.3",
 	"description": "Keep running in the system tray instead of quitting when you close the window.",
 	"main": "main.js",
 	"scripts": {

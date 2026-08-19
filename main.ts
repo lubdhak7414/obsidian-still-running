@@ -20,10 +20,10 @@ import {
  * Still Running - keep Obsidian running in the system tray instead of quitting.
  */
 
-// Last-resort fallback icon (22x22 PNG, KDE-friendly). Normally use app.getFileIcon to get the actual Obsidian icon;
+// Last-resort fallback icon (22x22 PNG, cube, KDE-friendly). Normally use app.getFileIcon to get the actual Obsidian icon;
 // this only shows up if that extraction fails. 22px is the KDE tray ideal (16-24), avoids the 64px “?→empty” on Wayland.
 const DEFAULT_TRAY_ICON =
-	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABYAAAAWCAYAAADEtGw7AAAAnUlEQVR4nN2VwQ2AIAxFoXEC3UZXkxNdTbfRFfREIljaauXivwH9D1J+wLlG8lLBPG4HNY/rwHr9U6B2A7BAuVqwQDkPWKE1L3wBpRidUygufTYO0y56QDptLKC1uaTEIlOhAXBrItiin4EDc/tSMkB6UAIB4KCJpcpxUOS22goUnkGNroysx2iAl97b5eELOOUhU4EP4LXaZl9TM53AHUTQzTh8VAAAAABJRU5ErkJggg==";
+	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABYAAAAWCAYAAADEtGw7AAAC8ElEQVR4nL1U3UsUURQ/596Z2ZmdNFMWfYveAqFEhOghEnrzpV52of6BCB96q15iZiHfe7CX/oFi1wgiwbdVNHpKCVNTRNRA/EDLzd2dmd17T9yZWdDWj6Wo38twz8fv/O45cw/APwI2E0REKo7FR4mI9NeVcznizdh+h3aSg4hChYgoCoWC1m50DyIB/7qxPZzJYEAOMXBDv2yqFRRfWxGq89zH3QEAzFqW1QeI4Hvl6UCK7NXrqXdxPD+uPSf2+MvUVg8x7hq6cVtFVSoloZJNM6khIPiBN0oCnCs3Up9OVUyRUlid2+6UMvHEK4kHiYRlHJSLEii8ctgaIgqvbidbWBB41WSr/tK22VDqor0Zty5UXp80uO44V8Y3L1Yfr8/5D5FL8IIDCVLFRKQxGElgfrVEmgE0M7k7+PT++COV67oubxzeePTZ26rYhZG1WuoSK/b2dyU6uiy7FkhWrQlQynVDg4TJ5LeV/dLo60V/ceagDbhvhxQxx1HiGJrOhW0a2sby9/bt9ZJ/ua9jv/tayjSTusU4QvlnUBkbWfEmx9bMaiDs860XmCdU1aNoICYglJJAN7lEQGv2w465Ol886L3VuV8sevT+1SLf2Si1JW0DNQtrUkpGMprPqcR1UDgCgkRSQ78sWsZH1moLS5tAxDS71QApCEjSoSk1SVyHSkauess109KhWhUh6VlorEek/heBsebIFv5moFp0yBp5CERzxMCEqducADgBHZsU1Selm2lakmNY+gRid6JfdQ0Zw2fFys5zjnrV1M9xJbT+KGKJSrc0eJIzpotydW8YoDYEQDgx4Yozn7Rzb6oHJTiM6XcYIpS9klha3iYiXVNnIf1RDszJz2ZOf9J1KNX5NLBMPlpCzt2pAQY8i6j3LSxuge+Xpwkp+3Y2Ey6hdDrH8/m0BGhyCTlqLQJANovSuVnQvA4aXF37wWcrn4fn57OBA07kh+yxa/NMpNO5hqV+nO0PQZhLE48IG1/Zf8UvgIBxORwxbfUAAAAASUVORK5CYII=";
 
 // ── Electron (main process API accessed from renderer) minimal types ──────────
 // Declare only used members narrowly, not any, to avoid unsafe-access warnings.
