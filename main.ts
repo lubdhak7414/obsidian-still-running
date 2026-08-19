@@ -20,10 +20,10 @@ import {
  * Still Running - keep Obsidian running in the system tray instead of quitting.
  */
 
-// Last-resort fallback icon (64x64 PNG). Normally use app.getFileIcon to get the actual Obsidian icon;
-// this only shows up if that extraction fails.
+// Last-resort fallback icon (22x22 PNG, KDE-friendly). Normally use app.getFileIcon to get the actual Obsidian icon;
+// this only shows up if that extraction fails. 22px is the KDE tray ideal (16-24), avoids the 64px “?→empty” on Wayland.
 const DEFAULT_TRAY_ICON =
-	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAABmJLR0QA/wD/AP+gvaeTAAADwklEQVR4nO3aXWhTZxgH8P/zJI1zqxVtZ8Nm2I3FrUpXZUXoyEpHB8OLyYSIhbmxqyEiuFJqkZVGRdjGBBWGd8KGwqhsnSi70EpcWzrRTtfGdFQLReP6kbqsncuC5vQ8I7CLrasrJzkfac/7g1wl75tz/jxPPngfQFEURVEURbFfrC+xLvuAg8iJN41FEsWaV5pBaAXAEDmpa8vaN9Wvml7SAYgID/Ym3gHhUwDlc55OQuRQUiv/vL6etCUXwGDPZIMQjgKoWuClwyLSXB30X1gSAQz0Tq0H6YchCBlc2kUsTVW1/igWYwCxvvjqjPhaSPAhAF+O22hCOEWQtpdf9SewGALo75ciXzrxvhCOACgzadtpEvp4+cOZYxVbKx6hUAMY7JlsAOG4AJWwgAAjLHSgKrjmbEEFcKN7vNLDnP2AexM2INAVndFUXbvmZv575aE/MlZW5OU2EO0B4IG9dBDOZGZ5/yuvPTtuawCxWMynJUt3E9EhAUrgrBQEn6U8jz+prQ2kjS5mowtOtFxdmxwp6QbRsQK4+axnQGhP3c9E9m7/bq3RxV6jC6ZGM+WX7o5WPV9R/H3NG89t8XjoKThIy+jpzi+GrsV+nNoi4Oyvy/uWBvC35b/c+aNufOR2fPPr/okXKlfWwAE3fxi/fv70sF/XpS7XPbz5XIAuCPRfngjErj24HtwW8K9Y5QvABr9OpuJfnhiYmEk+yjt4rxkXlH6o1Vw8PZq2ui3+We4ATAnbC/NY2hZmlLvVAVjSFmaWuy0BmNUWVpS7rQHk0xZWlbsTARhqC6vL3bEAFmoLu8rd8QDma4vkzJ+wq9wLJYB/tUV0aAxOYrgcw+UYLsdwOYbLMVyO4XIMl2O4HMPl2OgC3aNnDynvocAIcE9kNmF5AEe+qouzXloByD4Av8NhBKSI5GBRMb947lZjPIf1uQs3Rspkltskj6OxPP4M6UI4w5nM/m9+3mXv0dhc4VB35SzhKJHxw9EcA7jCLE1fDzQ6ezg6V3hHT4NOchwGjseNBEDAiAAHOqM7zxbkt0C4I9g1sfLpaiH6AMADE7eeBqQ1nS7ZaObNWzoiEw71rdYp0wKi/x2RWaACNAJOCT1u6xx8d3GMyMz1Uah3PbN+GJh/SOpJAQjQJeCmc9Edi3NI6gmfD/8Zk5sngGEImjtv7bywpH4JhjuCXfxScJOA3gNkcp6XJIWw77fS8o123bxjo7LhUKRY93AzhFqjQ2MMopPCvvZvf3rb9lFZR4VDkXVvbehwdFhaURRFURQFbvUXGt/Tnv5lS68AAAAASUVORK5CYII=";
+	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABYAAAAWCAYAAADEtGw7AAAAnUlEQVR4nN2VwQ2AIAxFoXEC3UZXkxNdTbfRFfREIljaauXivwH9D1J+wLlG8lLBPG4HNY/rwHr9U6B2A7BAuVqwQDkPWKE1L3wBpRidUygufTYO0y56QDptLKC1uaTEIlOhAXBrItiin4EDc/tSMkB6UAIB4KCJpcpxUOS22goUnkGNroysx2iAl97b5eELOOUhU4EP4LXaZl9TM53AHUTQzTh8VAAAAABJRU5ErkJggg==";
 
 // ── Electron (main process API accessed from renderer) minimal types ──────────
 // Declare only used members narrowly, not any, to avoid unsafe-access warnings.
@@ -892,33 +892,52 @@ export default class BackgroundTrayPlugin extends Plugin {
 		}
 	}
 
-	// Resolve tray icon: custom path → actual Obsidian app icon → fallback.
+	// Resolve tray icon: custom path → actual Obsidian app icon → fallback, always resized to 22px for KDE/Wayland.
 	private async resolveTrayIcon(
 		remote: ElectronRemote
 	): Promise<NativeImageLike> {
 		const { nativeImage, app } = remote;
+		let icon: NativeImageLike | null = null;
 		// 1) User-specified path
 		if (this.settings.trayIconPath) {
 			try {
 				const c = nativeImage.createFromPath(
 					this.settings.trayIconPath
 				);
-				if (!c.isEmpty()) return c;
+				if (!c.isEmpty()) icon = c;
 			} catch {
 				/* invalid path → try next candidate */
 			}
 		}
 		// 2) Extract icon from actual Obsidian executable at runtime (no bundling needed)
-		try {
-			const img = await app.getFileIcon(process.execPath, {
-				size: "normal",
-			});
-			if (!img.isEmpty()) return img;
-		} catch {
-			/* icon extraction failed → fallback */
+		if (!icon) {
+			try {
+				const img = await app.getFileIcon(process.execPath, {
+					size: "normal",
+				});
+				if (!img.isEmpty()) icon = img;
+			} catch {
+				/* icon extraction failed → fallback */
+			}
 		}
-		// 3) Last-resort fallback
-		return nativeImage.createFromDataURL(DEFAULT_TRAY_ICON);
+		// 3) Last-resort fallback (now 22x22, not 64x64 which is empty on KDE Wayland)
+		if (!icon || icon.isEmpty()) {
+			icon = nativeImage.createFromDataURL(DEFAULT_TRAY_ICON);
+		}
+		// KDE tray is picky: resize any non-22px icon to 22px to avoid “?” placeholder on Wayland
+		try {
+			const anyIcon = icon as unknown as { getSize?: () => { width: number; height: number }; resize?: (o: { width: number; height: number }) => NativeImageLike };
+			if (icon && !icon.isEmpty() && anyIcon.resize && anyIcon.getSize) {
+				const s = anyIcon.getSize();
+				if (s.width !== 22 || s.height !== 22) {
+					const resized = anyIcon.resize({ width: 22, height: 22 });
+					if (!resized.isEmpty()) return resized;
+				}
+			}
+		} catch {
+			/* resize not available */
+		}
+		return icon!;
 	}
 
 	private destroyTray() {
